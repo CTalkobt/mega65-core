@@ -1780,30 +1780,30 @@ flag_bits:
       .checkpc    $ff00
 
 cmd_jmp_cmds:
-	; @ = dump memory from CPU perspective (was D)
-	; D = disassemble instructions (was $)
+    ; @ = dump memory from CPU perspective (was D)
+    ; D = disassemble instructions (was $)
       .byte       "!@M?HRTZWBG+I#EFSLDJ"
 cmd_jmp_table:
-      .word       reset_cmd   ; !
-      .word 	  dump_cpu_memory_cmd   ; @ (show memory from CPU context)
-      .word 	  dump_memory_cmd 	; M
-      .word 	  print_banner		; ? = help
-      .word	  print_banner		; H = help
-      .word	  show_registers_cmd	; R = show registers
-      .word       trace_cmd		; T = set CPU trace/run mode
-      .word	  history_cmd		; Z = CPU history
-      .word	  watch_cmd		; W = Set/clear memory write watch point
-      .word	  break_cmd		; B = Set/clear CPU execution break point
-      .word	  set_pc_cmd		; G = Set CPU program counter
-      .word	  set_bitrate_cmd	; + = Set UART bitrate divisor
-      .word	  irq_cmd		; I = Enable/disable CPU interrupts
-      .word	  hyper_trap_cmd	; # = Enable/disable CPU hypervisor traps
-      .word       flag_break_cmd	; E = Set/clear CPU flags watch point
-      .word	  fill_mem_cmd		; F = Fill memory with a value
-      .word	  set_mem_cmd		; S = Set memory contents
-      .word 	  load_mem_cmd		; L = Load data into memory
-      .word	  disassemble_mem_cmd	; D = Disassemble memory
-      .word 	  debug_cmd		; J = Various debug functions for the monitor itself
+      .word reset_cmd             ; ! (reset)!
+      .word dump_cpu_memory_cmd   ; @ (show memory from CPU context)
+      .word dump_memory_cmd       ; M
+      .word print_banner          ; ? = help
+      .word print_banner          ; H = help
+      .word show_registers_cmd    ; R = show registers
+      .word trace_cmd             ; T = set CPU trace/run mode
+      .word history_cmd           ; Z = CPU history
+      .word watch_cmd             ; W = Set/clear memory write watch point
+      .word break_cmd             ; B = Set/clear CPU execution break point
+      .word set_pc_cmd            ; G = Set CPU program counter
+      .word set_bitrate_cmd       ; + = Set UART bitrate divisor
+      .word irq_cmd               ; I = Enable/disable CPU interrupts
+      .word hyper_trap_cmd        ; # = Enable/disable CPU hypervisor traps
+      .word flag_break_cmd        ; E = Set/clear CPU flags watch point
+      .word fill_mem_cmd          ; F = Fill memory with a value
+      .word set_mem_cmd           ; S = Set memory contents
+      .word load_mem_cmd          ; L = Load data into memory
+      .word disassemble_mem_cmd   ; D = Disassemble memory
+      .word debug_cmd             ; J = Various debug functions for the monitor itself
 
 ;securemode_entry_msg:
 ;	.byte   "All storage and communications devices have been disconnected.",13,10
