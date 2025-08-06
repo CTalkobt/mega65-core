@@ -1915,7 +1915,6 @@ write_timeout_msg:
       .byte       13,10,"Write timeout",13,10,0
 bad_addr_msg:
       .byte       13,10,"Address parse error",13,10,0
-      ;; .byte       13,10,"Address parse error",13,10,0  Removed due to space issues. 
 bad_index_msg:
       .byte       13,10,"Bad index (must be 0-1023)",13,10,0
 bad_mask_msg:
