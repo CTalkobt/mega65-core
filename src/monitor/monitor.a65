@@ -29,7 +29,7 @@
 ;
 ; $9000-$97ff - monitor hardware control registers
 ;
-; $f000-$ffff - 4K Monitor ROM/RAM, also mirrored at $0000-$0fff
+; $f000-$ffff - 8K Monitor ROM/RAM, also mirrored at $0000-$0fff
 
 ; monitor I/O memory map
       .alias      cpu_state_base      $7000
@@ -166,9 +166,10 @@
       .checkpc  $100      ; Make sure we don't hit stack
       
       .text
-			.org    $f000       ; ROM image starts here.  First 512 bytes will be padded and represent monitor RAM.
-
+      .org      $f000     ; ROM image starts here.  First 512 bytes will be padded and represent monitor RAM.
       .advance  $f200     ; $200 is to avoid zero page and stack space up above that doesn't get output
+;--------------------------------------
+    
           
 monitor_reset:
       sei                 ; disable interrupts
@@ -269,13 +270,14 @@ maybe_enter_matrix_mode:
 get_monitor_char:
       lda         monitor_char      ; get character from monitor
       jsr         output_char       ; send it along to UART (and perhaps back to monitor?)
+j1accepting_input:
       bra         accepting_input
       
 get_uart_char:
       lda         uart_rx           ; get character (for now just from UART)
       ldx         #0
       stx         trace_continuous  ; disable tracing
-      jmp	  character_received
+      jmp	      character_received
 
 get_keyboard_char:
       lda	  keyboard_rx
@@ -294,12 +296,12 @@ character_received:
       inx
       stx         cmdlen
       jsr         output_char
-      bra         accepting_input
+      bra         j1accepting_input
       
 beep:
       lda         #$07
       jsr         output_char
-      bra         accepting_input
+      bra         j1accepting_input
 
       ; check for "special" non printable character codes
 otherchar:
@@ -325,6 +327,7 @@ otherchar:
       beq         enter_pressed
       cmp         #10
       beq         enter_pressed
+j1beep:
       bra         beep
 
 clearscreen:
@@ -345,7 +348,7 @@ wipememory:
 	; XXX - Erase all RAM, IO registers, including palettes,
 	; and install a minimal black and white palette.
 	jsr   	erase_memory
-	jmp	accepting_input
+    bra         j1accepting_input
 
 cursordown:
 	; Subtract $80 from mem_addr, and act as though M was pressed
@@ -392,11 +395,11 @@ cursorup:
 
 backspace:
       ldx         cmdlen
-      beq         beep
+      beq         j1beep
       dex
       stx         cmdlen
       `printstr   backspace_msg
-      jmp         accepting_input
+	  bra	      j1accepting_input
 
 ; -------------------------------------
 ; "Empty" command
@@ -510,6 +513,7 @@ accept_command:
 	sta   $900a
 
 	jmp	next_command
+
 
 erase_memory:
 	; XXX - Implement me.
@@ -801,6 +805,51 @@ dump_mem_read_error:
       `printstr   read_timeout_msg
       jmp         next_command
 
+; -------------------------------------
+; Dump Memory Bytes Command (O)
+; -------------------------------------
+dump_mem_bytes_cmd:
+      lda         #$00
+      sta         use_cpu_perspective
+      plx                                   ; pop x
+      jsr         parse_addr32_or_continue  ; get 32-bit address, or abort to next command
+
+      ; x will count bytes we've read (16 per line).  y will count lines printed
+      ldy         mem_line_cnt
+dmb_dump_mem_bytes:
+
+      lda         #$3a                      ; display leading : before address
+      jsr         output_char
+
+        ; display current memory address
+      ldx         #3
+*     lda         mem_addr,x
+      jsr         print_hex_byte
+      dex
+      bpl         -
+
+      lda         #$3a                      ; display : between address and data
+      jsr         output_char
+
+      ldx         #16
+dmb_dump_mem_loop:
+      ; initiate read via any write (without high bit set) to mem_read
+      stx         mem_read
+      ; wait for N or V flag to get set.  check for error first.
+dmb_wait_byte:
+      bit         mem_status
+      bvs         dump_mem_read_error
+      bpl         dmb_wait_byte
+      lda         mem_read
+      jsr         output_char
+      stx         mem_inc             ; Dummy write to increment read address
+      dex
+      bne         dmb_dump_mem_loop
+      jsr         print_crlf
+      dey
+      bne         dmb_dump_mem_bytes  ; do next line
+      jmp         next_command
+
 bad_addr:
       `printstr   bad_addr_msg
       rts
@@ -816,6 +865,8 @@ skip_spaces:
                                     ; otherwise fall through and don't consume it
 end_spaces:
       rts
+
+;
 
 ; ----------------------------------------
 ; Parse (up to) 32-bit address value
@@ -848,6 +899,9 @@ dm_addrpatched:
 
 	rts
 
+; Converts hex values from command string to 4 bytes. 
+; Modifies:
+;   hex_value[0..4] - Value from command line. 
 parse_addr32:
       jsr         parse_hex_value       ; returns with # of hex digits parsed in Y, X pointing at next index
       cpy         #0
@@ -921,7 +975,9 @@ end_nibble:
       bne         next_hex_digit  ; keep going if we parsed something
       rts                         ; done... leave X with next character index, Y with # chars parsed
       
-      ; copy hex_value to target_address and mem_addr. preserves X.
+; copy hex_value to target_address and mem_addr. preserves X.
+; Modifies: 
+;   target_addr[0..3] = hex_value[0..3]
 .scope
 copy_hex_value_to_target_address:
       phx
@@ -1782,11 +1838,12 @@ flag_bits:
 cmd_jmp_cmds:
     ; @ = dump memory from CPU perspective (was D)
     ; D = disassemble instructions (was $)
-      .byte       "!@M?HRTZWBG+I#EFSLDJ"
+      .byte       "!@MO?HRTZWBG+I#EFSLDJ"
 cmd_jmp_table:
       .word reset_cmd             ; ! (reset)!
       .word dump_cpu_memory_cmd   ; @ (show memory from CPU context)
-      .word dump_memory_cmd       ; M
+      .word dump_memory_cmd       ; M = Dump memory
+      .word dump_mem_bytes_cmd    ; O = Dump memory as bytes
       .word print_banner          ; ? = help
       .word print_banner          ; H = help
       .word show_registers_cmd    ; R = show registers
@@ -1858,6 +1915,7 @@ write_timeout_msg:
       .byte       13,10,"Write timeout",13,10,0
 bad_addr_msg:
       .byte       13,10,"Address parse error",13,10,0
+      ;; .byte       13,10,"Address parse error",13,10,0  Removed due to space issues. 
 bad_index_msg:
       .byte       13,10,"Bad index (must be 0-1023)",13,10,0
 bad_mask_msg:
