@@ -11,6 +11,7 @@
  *   etherdbg fill <ip> <addr> <count> <val>  Fill memory with value
  *   etherdbg peek <ip> <addr>                Read single byte
  *   etherdbg poke <ip> <addr> <val>          Write single byte
+ *   etherdbg screen <ip> [file.png]           Screenshot (ASCII + PNG)
  */
 
 #include <cstdlib>
@@ -22,6 +23,7 @@
 #include "transport_udp.h"
 #include "commands.h"
 #include "protocol.h"
+#include "screen.h"
 
 using namespace std::string_view_literals;
 
@@ -71,6 +73,7 @@ static void usage(std::string_view progname)
         "  {} fill <ip> <addr> <count> <val>  Fill memory region\n"
         "  {} peek <ip> <addr>                Read single byte\n"
         "  {} poke <ip> <addr> <val>          Write single byte\n"
+        "  {} screen <ip> [file.png]           Screenshot (ASCII + PNG)\n"
         "\n"
         "Addresses and values are in hex (optional $ or 0x prefix).\n"
         "\n"
@@ -78,7 +81,7 @@ static void usage(std::string_view progname)
         "  -p <port>   UDP port (default: 4510)\n"
         "  -v          Verbose output\n"
         "  -q          Quiet (errors only)",
-        progname, progname, progname, progname, progname, progname);
+        progname, progname, progname, progname, progname, progname, progname);
 }
 
 int main(int argc, char** argv)
@@ -225,6 +228,17 @@ int main(int argc, char** argv)
         auto val = static_cast<uint8_t>(parse_hex(argv[argidx++]));
 
         int ret = etherdbg::cmd_fill_memory(*transport, addr, count, val,
+                                             verbose >= 1);
+        return ret == 0 ? 0 : 1;
+    }
+
+    if (command == "screen") {
+        auto transport = create_transport();
+        std::string_view png_file;
+        if (argidx < argc)
+            png_file = argv[argidx++];
+
+        int ret = etherdbg::cmd_screen_shot(*transport, png_file,
                                              verbose >= 1);
         return ret == 0 ? 0 : 1;
     }
