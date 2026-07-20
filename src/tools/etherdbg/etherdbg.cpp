@@ -48,12 +48,17 @@ static uint32_t parse_hex(std::string_view s)
 }
 
 /*
- * Heuristic: does this string look like an IP address?
- * Checks for digits-and-dots pattern (e.g. "192.168.1.1" or "255.255.255.255").
+ * Heuristic: does this string look like an IP/IPv6 address?
+ * IPv6 link-local: contains ':' (e.g. "fe80::1234%eth0")
+ * IPv4: digits-and-dots (e.g. "192.168.1.1")
  */
 static bool looks_like_ip(std::string_view s)
 {
     if (s.empty()) return false;
+    /* IPv6 addresses always contain colons */
+    if (s.find(':') != std::string_view::npos)
+        return true;
+    /* IPv4: digits and exactly 3 dots */
     int dots = 0;
     for (char c : s) {
         if (c == '.')
@@ -96,7 +101,9 @@ static void usage(std::string_view progname)
         "  {} screen [ip] [file.png]          Screenshot (ASCII + PNG)\n"
         "\n"
         "If <ip> is omitted, broadcasts to auto-detect the MEGA65.\n"
-        "Addresses and values are in hex (optional $ or 0x prefix).\n"
+        "Addresses and values are in hex. Use 0x prefix (e.g. 0xD020) or\n"
+        "plain hex (e.g. D020). Avoid shell's $-prefix as bash interprets\n"
+        "it as a variable (use '\\$D020' or single quotes if you must).\n"
         "\n"
         "Options:\n"
         "  -p <port>   UDP port (default: 4510)\n"
@@ -145,16 +152,16 @@ int main(int argc, char** argv)
         if (argidx < argc && looks_like_ip(argv[argidx])) {
             auto ip = std::string_view(argv[argidx++]);
             if (verbose >= 1)
-                std::println("etherdbg: connecting to {}:{}", ip, port);
+                std::println("etherdbg: connecting to {}", ip);
             t = etherdbg::create_udp_transport(ip, port);
         } else {
             if (verbose >= 1)
-                std::println("etherdbg: broadcasting to discover MEGA65...");
-            t = etherdbg::create_udp_transport_broadcast(port);
+                std::println("etherdbg: discovering MEGA65 on local network...");
+            t = etherdbg::create_udp_transport_auto(port, verbose >= 1);
         }
 
         if (!t) {
-            std::println(stderr, "etherdbg: failed to create UDP transport");
+            std::println(stderr, "etherdbg: failed to connect to MEGA65");
             std::exit(1);
         }
         t->verbose = (verbose >= 2);
