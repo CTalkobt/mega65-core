@@ -4,14 +4,17 @@
  * Communicates with a MEGA65 running the ETHLOAD.M65 listener
  * (activated by Shift+pound on the keyboard).
  *
+ * The IP address is optional for all commands. If omitted, etherdbg
+ * broadcasts to discover the MEGA65 on the local network.
+ *
  * Usage:
- *   etherdbg load <ip> <file.prg>            Load a PRG file
- *   etherdbg read <ip> <addr> [count]        Read memory (hex dump)
- *   etherdbg write <ip> <addr> <byte>...     Write bytes to memory
- *   etherdbg fill <ip> <addr> <count> <val>  Fill memory with value
- *   etherdbg peek <ip> <addr>                Read single byte
- *   etherdbg poke <ip> <addr> <val>          Write single byte
- *   etherdbg screen <ip> [file.png]           Screenshot (ASCII + PNG)
+ *   etherdbg load [ip] <file.prg>            Load a PRG file
+ *   etherdbg read [ip] <addr> [count]        Read memory (hex dump)
+ *   etherdbg write [ip] <addr> <byte>...     Write bytes to memory
+ *   etherdbg fill [ip] <addr> <count> <val>  Fill memory with value
+ *   etherdbg peek [ip] <addr>                Read single byte
+ *   etherdbg poke [ip] <addr> <val>          Write single byte
+ *   etherdbg screen [ip] [file.png]          Screenshot (ASCII + PNG)
  */
 
 #include <cstdlib>
@@ -44,6 +47,23 @@ static uint32_t parse_hex(std::string_view s)
     return val;
 }
 
+/*
+ * Heuristic: does this string look like an IP address?
+ * Checks for digits-and-dots pattern (e.g. "192.168.1.1" or "255.255.255.255").
+ */
+static bool looks_like_ip(std::string_view s)
+{
+    if (s.empty()) return false;
+    int dots = 0;
+    for (char c : s) {
+        if (c == '.')
+            dots++;
+        else if (c < '0' || c > '9')
+            return false;
+    }
+    return dots == 3;
+}
+
 static void hex_dump(uint32_t base_addr, std::span<const uint8_t> data)
 {
     for (size_t i = 0; i < data.size(); i += 16) {
@@ -67,14 +87,15 @@ static void usage(std::string_view progname)
 {
     std::println(stderr,
         "Usage:\n"
-        "  {} load <ip> <file.prg>            Load a PRG file\n"
-        "  {} read <ip> <addr> [count]        Read memory (default 256 bytes)\n"
-        "  {} write <ip> <addr> <byte>...     Write hex bytes to memory\n"
-        "  {} fill <ip> <addr> <count> <val>  Fill memory region\n"
-        "  {} peek <ip> <addr>                Read single byte\n"
-        "  {} poke <ip> <addr> <val>          Write single byte\n"
-        "  {} screen <ip> [file.png]           Screenshot (ASCII + PNG)\n"
+        "  {} load [ip] <file.prg>            Load a PRG file\n"
+        "  {} read [ip] <addr> [count]        Read memory (default 256 bytes)\n"
+        "  {} write [ip] <addr> <byte>...     Write hex bytes to memory\n"
+        "  {} fill [ip] <addr> <count> <val>  Fill memory region\n"
+        "  {} peek [ip] <addr>                Read single byte\n"
+        "  {} poke [ip] <addr> <val>          Write single byte\n"
+        "  {} screen [ip] [file.png]          Screenshot (ASCII + PNG)\n"
         "\n"
+        "If <ip> is omitted, broadcasts to auto-detect the MEGA65.\n"
         "Addresses and values are in hex (optional $ or 0x prefix).\n"
         "\n"
         "Options:\n"
@@ -114,15 +135,24 @@ int main(int argc, char** argv)
 
     auto command = std::string_view(argv[argidx++]);
 
-    /* All commands need at least an IP address */
-    if (argidx >= argc && command != "help") {
-        std::println(stderr, "etherdbg {}: requires <ip-address>", command);
-        return 1;
-    }
-
+    /*
+     * Try to consume an IP address from the next argument.
+     * If it looks like an IP, use direct mode; otherwise broadcast.
+     */
     auto create_transport = [&]() -> std::unique_ptr<etherdbg::Transport> {
-        auto ip = std::string_view(argv[argidx++]);
-        auto t = etherdbg::create_udp_transport(ip, port);
+        std::unique_ptr<etherdbg::Transport> t;
+
+        if (argidx < argc && looks_like_ip(argv[argidx])) {
+            auto ip = std::string_view(argv[argidx++]);
+            if (verbose >= 1)
+                std::println("etherdbg: connecting to {}:{}", ip, port);
+            t = etherdbg::create_udp_transport(ip, port);
+        } else {
+            if (verbose >= 1)
+                std::println("etherdbg: broadcasting to discover MEGA65...");
+            t = etherdbg::create_udp_transport_broadcast(port);
+        }
+
         if (!t) {
             std::println(stderr, "etherdbg: failed to create UDP transport");
             std::exit(1);
@@ -132,28 +162,31 @@ int main(int argc, char** argv)
     };
 
     if (command == "load") {
-        if (argidx + 2 > argc) {
-            std::println(stderr,
-                         "etherdbg load: requires <ip-address> <file.prg>");
+        if (argidx >= argc) {
+            std::println(stderr, "etherdbg load: requires <file.prg>");
             return 1;
         }
         auto transport = create_transport();
+        if (argidx >= argc) {
+            std::println(stderr, "etherdbg load: requires <file.prg>");
+            return 1;
+        }
         auto file = std::string_view(argv[argidx++]);
-
-        if (verbose >= 1)
-            std::println("etherdbg: loading '{}' to port {}", file, port);
 
         int ret = etherdbg::cmd_load_program(*transport, file, verbose >= 1);
         return ret == 0 ? 0 : 1;
     }
 
     if (command == "read") {
-        if (argidx + 1 > argc) {
-            std::println(stderr,
-                         "etherdbg read: requires <ip> <addr> [count]");
+        if (argidx >= argc) {
+            std::println(stderr, "etherdbg read: requires <addr> [count]");
             return 1;
         }
         auto transport = create_transport();
+        if (argidx >= argc) {
+            std::println(stderr, "etherdbg read: requires <addr>");
+            return 1;
+        }
         auto addr = parse_hex(argv[argidx++]);
         uint32_t count = 256;
         if (argidx < argc)
@@ -168,11 +201,15 @@ int main(int argc, char** argv)
     }
 
     if (command == "peek") {
-        if (argidx + 1 > argc) {
-            std::println(stderr, "etherdbg peek: requires <ip> <addr>");
+        if (argidx >= argc) {
+            std::println(stderr, "etherdbg peek: requires <addr>");
             return 1;
         }
         auto transport = create_transport();
+        if (argidx >= argc) {
+            std::println(stderr, "etherdbg peek: requires <addr>");
+            return 1;
+        }
         auto addr = parse_hex(argv[argidx++]);
 
         auto data = etherdbg::cmd_read_memory(*transport, addr, 1, false);
@@ -183,13 +220,20 @@ int main(int argc, char** argv)
     }
 
     if (command == "write") {
-        if (argidx + 2 > argc) {
-            std::println(stderr,
-                         "etherdbg write: requires <ip> <addr> <byte>...");
+        if (argidx >= argc) {
+            std::println(stderr, "etherdbg write: requires <addr> <byte>...");
             return 1;
         }
         auto transport = create_transport();
+        if (argidx >= argc) {
+            std::println(stderr, "etherdbg write: requires <addr> <byte>...");
+            return 1;
+        }
         auto addr = parse_hex(argv[argidx++]);
+        if (argidx >= argc) {
+            std::println(stderr, "etherdbg write: requires at least one byte");
+            return 1;
+        }
         std::vector<uint8_t> data;
         while (argidx < argc)
             data.push_back(static_cast<uint8_t>(parse_hex(argv[argidx++])));
@@ -200,12 +244,15 @@ int main(int argc, char** argv)
     }
 
     if (command == "poke") {
-        if (argidx + 2 > argc) {
-            std::println(stderr,
-                         "etherdbg poke: requires <ip> <addr> <val>");
+        if (argidx >= argc) {
+            std::println(stderr, "etherdbg poke: requires <addr> <val>");
             return 1;
         }
         auto transport = create_transport();
+        if (argidx + 1 >= argc) {
+            std::println(stderr, "etherdbg poke: requires <addr> <val>");
+            return 1;
+        }
         auto addr = parse_hex(argv[argidx++]);
         auto val = static_cast<uint8_t>(parse_hex(argv[argidx++]));
         std::vector<uint8_t> data = {val};
@@ -217,12 +264,15 @@ int main(int argc, char** argv)
     }
 
     if (command == "fill") {
-        if (argidx + 3 > argc) {
-            std::println(stderr,
-                         "etherdbg fill: requires <ip> <addr> <count> <val>");
+        if (argidx >= argc) {
+            std::println(stderr, "etherdbg fill: requires <addr> <count> <val>");
             return 1;
         }
         auto transport = create_transport();
+        if (argidx + 2 >= argc) {
+            std::println(stderr, "etherdbg fill: requires <addr> <count> <val>");
+            return 1;
+        }
         auto addr = parse_hex(argv[argidx++]);
         auto count = parse_hex(argv[argidx++]);
         auto val = static_cast<uint8_t>(parse_hex(argv[argidx++]));
