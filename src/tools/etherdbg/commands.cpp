@@ -111,6 +111,17 @@ std::vector<uint8_t> cmd_read_memory(Transport& transport,
 
         auto packet = protocol::build_mem_read(cur_addr, remaining, seq);
 
+        if (transport.verbose) {
+            std::println(stderr, "[read] sending {} byte routine to read {} bytes from ${:07X}",
+                         packet.size(), remaining, cur_addr);
+            std::print(stderr, "[read] packet hex: ");
+            for (size_t i = 0; i < std::min(packet.size(), size_t{64}); i++)
+                std::print(stderr, "{:02X} ", packet[i]);
+            if (packet.size() > 64)
+                std::print(stderr, "... ({} more)", packet.size() - 64);
+            std::println(stderr, "");
+        }
+
         bool got_response = false;
         for (int retry = 0; retry < DEFAULT_READ_RETRIES; retry++) {
             auto send_result = transport.send(packet);
@@ -121,7 +132,7 @@ std::vector<uint8_t> cmd_read_memory(Transport& transport,
             }
 
             auto recv_result = transport.recv(
-                protocol::RESPONSE_HEADER_SIZE + remaining,
+                protocol::RESPONSE_HEADER_SIZE + remaining + 256,
                 DEFAULT_RECV_TIMEOUT_MS);
 
             if (!recv_result) {
@@ -134,6 +145,17 @@ std::vector<uint8_t> cmd_read_memory(Transport& transport,
                 std::println(stderr, "etherdbg: recv failed: {}",
                              to_string(recv_result.error()));
                 return {};
+            }
+
+            if (transport.verbose) {
+                auto& raw = *recv_result;
+                std::println(stderr, "[read] received {} bytes", raw.size());
+                std::print(stderr, "[read] data: ");
+                for (size_t i = 0; i < std::min(raw.size(), size_t{64}); i++)
+                    std::print(stderr, "{:02X} ", raw[i]);
+                if (raw.size() > 64)
+                    std::print(stderr, "...");
+                std::println(stderr, "");
             }
 
             uint32_t resp_addr;
