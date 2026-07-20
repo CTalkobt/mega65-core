@@ -2,17 +2,21 @@
  * transport_udp.h - UDP transport for MEGA65 Ethernet debug protocol
  */
 
-#ifndef ETHERDBG_TRANSPORT_UDP_H
-#define ETHERDBG_TRANSPORT_UDP_H
+#pragma once
 
 #include "transport.h"
+#include <memory>
+#include <string_view>
 
-#define ETHERDBG_DEFAULT_PORT 4510
+namespace etherdbg {
+
+inline constexpr int DEFAULT_PORT = 4510;
 
 /*
  * Create a UDP transport connected to the given IP address and port.
- * Returns NULL on failure.
+ * Returns nullptr on failure.
  */
-struct transport *transport_udp_create(const char *ip_addr, int port);
+std::unique_ptr<Transport> create_udp_transport(std::string_view ip_addr,
+                                                 int port = DEFAULT_PORT);
 
-#endif /* ETHERDBG_TRANSPORT_UDP_H */
+} // namespace etherdbg

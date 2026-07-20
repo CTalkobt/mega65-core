@@ -1,5 +1,5 @@
-CC ?= gcc
-CFLAGS ?= -Wall -Wextra -std=c11 -O2
+CXX ?= g++
+CXXFLAGS ?= -Wall -Wextra -std=c++23 -O2
 LDFLAGS ?=
 
 # Windows needs winsock
@@ -7,8 +7,8 @@ ifeq ($(OS),Windows_NT)
 	LDFLAGS += -lws2_32
 endif
 
-SRCS = etherdbg.c commands.c protocol.c transport_udp.c
-OBJS = $(SRCS:.c=.o)
+SRCS = etherdbg.cpp commands.cpp protocol.cpp transport_udp.cpp
+OBJS = $(SRCS:.cpp=.o)
 TARGET = etherdbg
 
 .PHONY: all clean
@@ -16,16 +16,16 @@ TARGET = etherdbg
 all: $(TARGET)
 
 $(TARGET): $(OBJS)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
 
-%.o: %.c
-	$(CC) $(CFLAGS) -c -o $@ $<
+%.o: %.cpp
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
 # Header dependencies
-etherdbg.o: etherdbg.c transport.h transport_udp.h commands.h
-commands.o: commands.c commands.h protocol.h transport.h
-protocol.o: protocol.c protocol.h
-transport_udp.o: transport_udp.c transport.h transport_udp.h
+etherdbg.o: etherdbg.cpp transport.h transport_udp.h commands.h
+commands.o: commands.cpp commands.h protocol.h transport.h
+protocol.o: protocol.cpp protocol.h
+transport_udp.o: transport_udp.cpp transport.h transport_udp.h
 
 clean:
 	rm -f $(OBJS) $(TARGET)

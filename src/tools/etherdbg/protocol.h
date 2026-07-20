@@ -14,47 +14,30 @@
  *     control to the MEGA65.
  */
 
-#ifndef ETHERDBG_PROTOCOL_H
-#define ETHERDBG_PROTOCOL_H
+#pragma once
 
-#include <stddef.h>
-#include <stdint.h>
+#include <cstdint>
+#include <span>
+#include <vector>
 
-/* Maximum data payload per DMA load packet */
-#define PROTO_MAX_CHUNK_SIZE 1024
+namespace etherdbg::protocol {
 
-/* Total packet buffer size (routine + DMA list + data) */
-#define PROTO_DMA_PACKET_SIZE (128 + PROTO_MAX_CHUNK_SIZE)
-
-/* All-done packet size */
-#define PROTO_DONE_PACKET_SIZE 128
+inline constexpr int MAX_CHUNK_SIZE = 1024;
+inline constexpr int DMA_PACKET_SIZE = 128 + MAX_CHUNK_SIZE;
+inline constexpr int DONE_PACKET_SIZE = 128;
 
 /*
- * Build a DMA load packet that will copy 'data_len' bytes to the given
+ * Build a DMA load packet that will copy payload data to the given
  * 28-bit MEGA65 address when executed on the target.
- *
- * buf:       output buffer, must be at least PROTO_DMA_PACKET_SIZE bytes
- * addr:      destination address (bottom 16 bits)
- * bank:      destination bank byte
- * mb:        destination megabyte
- * data:      payload bytes to copy (max PROTO_MAX_CHUNK_SIZE)
- * data_len:  number of payload bytes
- * seq:       sequence number for this packet
- *
- * Returns the total packet size to send.
  */
-int proto_build_dma_load(uint8_t *buf, uint16_t addr, uint8_t bank,
-                         uint8_t mb, const uint8_t *data, int data_len,
-                         uint8_t seq);
+std::vector<uint8_t> build_dma_load(uint16_t addr, uint8_t bank, uint8_t mb,
+                                     std::span<const uint8_t> data,
+                                     uint8_t seq);
 
 /*
  * Build the "all done" packet that restores normal memory mapping
  * and returns control to the MEGA65.
- *
- * buf:  output buffer, must be at least PROTO_DONE_PACKET_SIZE bytes
- *
- * Returns the total packet size to send.
  */
-int proto_build_done(uint8_t *buf);
+std::vector<uint8_t> build_done();
 
-#endif /* ETHERDBG_PROTOCOL_H */
+} // namespace etherdbg::protocol

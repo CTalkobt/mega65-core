@@ -2,62 +2,55 @@
  * transport.h - Abstract transport interface for MEGA65 debug communication
  *
  * Provides a transport-agnostic interface for sending and receiving packets.
- * Implementations: UDP/Ethernet (transport_udp.c), future: JTAG serial.
+ * Implementations: UDP/Ethernet (transport_udp.cpp), future: JTAG serial.
  */
 
-#ifndef ETHERDBG_TRANSPORT_H
-#define ETHERDBG_TRANSPORT_H
+#pragma once
 
-#include <stddef.h>
+#include <cstddef>
+#include <cstdint>
+#include <expected>
+#include <span>
+#include <string>
+#include <vector>
 
-/* Error codes */
-#define TRANSPORT_OK        0
-#define TRANSPORT_ERR_INIT -1
-#define TRANSPORT_ERR_SEND -2
-#define TRANSPORT_ERR_RECV -3
-#define TRANSPORT_ERR_TIMEOUT -4
+namespace etherdbg {
 
-/* Forward declaration */
-struct transport;
+enum class TransportError {
+    InitFailed,
+    SendFailed,
+    RecvFailed,
+    Timeout,
+};
+
+inline std::string to_string(TransportError e) {
+    switch (e) {
+        case TransportError::InitFailed: return "initialization failed";
+        case TransportError::SendFailed: return "send failed";
+        case TransportError::RecvFailed: return "receive failed";
+        case TransportError::Timeout:    return "timeout";
+    }
+    return "unknown error";
+}
 
 /*
- * Transport operations vtable.
- * Each transport backend (UDP, JTAG, etc.) provides an implementation.
+ * Abstract transport interface.
+ * Each transport backend (UDP, JTAG, etc.) derives from this.
  */
-struct transport_ops {
-    /* Send a packet. Returns TRANSPORT_OK or error code. */
-    int (*send)(struct transport *t, const void *data, size_t len);
+class Transport {
+public:
+    virtual ~Transport() = default;
 
-    /* Receive a packet. Returns bytes received, 0 on timeout, or negative error.
+    /* Send a packet. Returns number of bytes sent or error. */
+    virtual std::expected<size_t, TransportError>
+    send(std::span<const uint8_t> data) = 0;
+
+    /* Receive a packet. Returns received bytes or error.
      * timeout_ms: milliseconds to wait (0 = non-blocking, -1 = indefinite) */
-    int (*recv)(struct transport *t, void *buf, size_t buflen, int timeout_ms);
+    virtual std::expected<std::vector<uint8_t>, TransportError>
+    recv(size_t max_len, int timeout_ms) = 0;
 
-    /* Close and free resources */
-    void (*close)(struct transport *t);
+    bool verbose = false;
 };
 
-/*
- * Base transport handle. Transport backends embed this as their first member.
- */
-struct transport {
-    const struct transport_ops *ops;
-    int verbose;
-};
-
-/* Convenience wrappers */
-static inline int transport_send(struct transport *t, const void *data, size_t len)
-{
-    return t->ops->send(t, data, len);
-}
-
-static inline int transport_recv(struct transport *t, void *buf, size_t buflen, int timeout_ms)
-{
-    return t->ops->recv(t, buf, buflen, timeout_ms);
-}
-
-static inline void transport_close(struct transport *t)
-{
-    t->ops->close(t);
-}
-
-#endif /* ETHERDBG_TRANSPORT_H */
+} // namespace etherdbg

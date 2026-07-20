@@ -1,5 +1,5 @@
 /*
- * protocol.c - MEGA65 debug protocol: packet construction
+ * protocol.cpp - MEGA65 debug protocol: packet construction
  *
  * Builds executable 45GS02 routines that the MEGA65's ETHLOAD.M65
  * listener will JSR into when received via UDP port 4510.
@@ -17,22 +17,24 @@
  *   - Restores normal MAP state and returns via RTS
  */
 
-#include <string.h>
+#include <algorithm>
+#include <cstring>
 #include "protocol.h"
 
-/*
- * Offsets within the DMA load packet for patchable fields.
- * These correspond to the positions in the embedded DMA list.
- */
-#define DMA_BYTE_COUNT_OFFSET       0x31
-#define DMA_DEST_ADDR_OFFSET        0x36
-#define DMA_DEST_BANK_OFFSET        0x38
-#define DMA_PACKET_NUMBER_OFFSET    0x3b
-#define DMA_DEST_MB_OFFSET          0x3c
-#define DMA_DATA_OFFSET             (0x80 - 0x2c)
+namespace etherdbg::protocol {
+
+namespace {
+
+/* Offsets within the DMA load packet for patchable fields */
+constexpr int DMA_BYTE_COUNT_OFFSET    = 0x31;
+constexpr int DMA_DEST_ADDR_OFFSET     = 0x36;
+constexpr int DMA_DEST_BANK_OFFSET     = 0x38;
+constexpr int DMA_PACKET_NUMBER_OFFSET = 0x3b;
+constexpr int DMA_DEST_MB_OFFSET       = 0x3c;
+constexpr int DMA_DATA_OFFSET          = 0x80 - 0x2c;
 
 /* Base DMA load routine -- 45GS02 machine code + embedded DMA list */
-static const uint8_t dma_load_template[] = {
+constexpr uint8_t dma_load_template[] = {
     /* $00: 45GS02 routine to set up and trigger DMA */
     0xa9, 0xff,             /* LDA #$FF           ; source MB = $FF          */
     0x8d, 0x05, 0xd7,       /* STA $D705          ; set DMA source MB        */
@@ -76,7 +78,7 @@ static const uint8_t dma_load_template[] = {
 };
 
 /* All-done routine -- restores memory mapping and exits listener */
-static const uint8_t done_template[] = {
+constexpr uint8_t done_template[] = {
     /* $00: Border flash for visual feedback */
     0xa9, 0x00,             /* LDA #$00                                      */
     0xee, 0x20, 0xd0,       /* INC $D020                                     */
@@ -126,37 +128,40 @@ static const uint8_t done_template[] = {
     0x60,                   /* RTS                                           */
 };
 
-int proto_build_dma_load(uint8_t *buf, uint16_t addr, uint8_t bank,
-                         uint8_t mb, const uint8_t *data, int data_len,
-                         uint8_t seq)
+} // anonymous namespace
+
+std::vector<uint8_t> build_dma_load(uint16_t addr, uint8_t bank, uint8_t mb,
+                                     std::span<const uint8_t> data,
+                                     uint8_t seq)
 {
-    /* Start from template */
-    memset(buf, 0, PROTO_DMA_PACKET_SIZE);
-    memcpy(buf, dma_load_template, sizeof(dma_load_template));
+    std::vector<uint8_t> buf(DMA_PACKET_SIZE, 0);
+    std::copy_n(dma_load_template, sizeof(dma_load_template), buf.begin());
 
     /* Patch destination address */
-    buf[DMA_DEST_ADDR_OFFSET]     = addr & 0xff;
-    buf[DMA_DEST_ADDR_OFFSET + 1] = (addr >> 8) & 0xff;
+    buf[DMA_DEST_ADDR_OFFSET]     = static_cast<uint8_t>(addr & 0xff);
+    buf[DMA_DEST_ADDR_OFFSET + 1] = static_cast<uint8_t>((addr >> 8) & 0xff);
     buf[DMA_DEST_BANK_OFFSET]     = bank;
     buf[DMA_DEST_MB_OFFSET]       = mb;
 
     /* Patch byte count */
-    buf[DMA_BYTE_COUNT_OFFSET]     = data_len & 0xff;
-    buf[DMA_BYTE_COUNT_OFFSET + 1] = (data_len >> 8) & 0xff;
+    buf[DMA_BYTE_COUNT_OFFSET]     = static_cast<uint8_t>(data.size() & 0xff);
+    buf[DMA_BYTE_COUNT_OFFSET + 1] = static_cast<uint8_t>((data.size() >> 8) & 0xff);
 
     /* Patch sequence number */
     buf[DMA_PACKET_NUMBER_OFFSET] = seq;
 
     /* Copy data payload */
-    if (data && data_len > 0)
-        memcpy(&buf[DMA_DATA_OFFSET], data, data_len);
+    if (!data.empty())
+        std::copy(data.begin(), data.end(), buf.begin() + DMA_DATA_OFFSET);
 
-    return PROTO_DMA_PACKET_SIZE;
+    return buf;
 }
 
-int proto_build_done(uint8_t *buf)
+std::vector<uint8_t> build_done()
 {
-    memset(buf, 0, PROTO_DONE_PACKET_SIZE);
-    memcpy(buf, done_template, sizeof(done_template));
-    return PROTO_DONE_PACKET_SIZE;
+    std::vector<uint8_t> buf(DONE_PACKET_SIZE, 0);
+    std::copy_n(done_template, sizeof(done_template), buf.begin());
+    return buf;
 }
+
+} // namespace etherdbg::protocol
