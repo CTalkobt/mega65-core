@@ -131,55 +131,63 @@ std::vector<uint8_t> cmd_read_memory(Transport& transport,
                 return {};
             }
 
-            auto recv_result = transport.recv(
-                protocol::RESPONSE_HEADER_SIZE + remaining + 256,
-                DEFAULT_RECV_TIMEOUT_MS);
+            /* Try receiving multiple times within each retry window,
+             * since beacon packets ("mega65") may arrive on the same
+             * socket and need to be skipped. */
+            for (int recv_attempt = 0; recv_attempt < 10; recv_attempt++) {
+                auto recv_result = transport.recv(
+                    protocol::RESPONSE_HEADER_SIZE + remaining + 256,
+                    DEFAULT_RECV_TIMEOUT_MS);
 
-            if (!recv_result) {
-                if (recv_result.error() == TransportError::Timeout) {
-                    if (verbose)
-                        std::println("  Timeout, retry {}/{}",
-                                     retry + 1, DEFAULT_READ_RETRIES);
-                    continue;
+                if (!recv_result) {
+                    if (recv_result.error() == TransportError::Timeout) {
+                        if (verbose)
+                            std::println("  Timeout, retry {}/{}",
+                                         retry + 1, DEFAULT_READ_RETRIES);
+                        break;  /* go to next retry (re-send) */
+                    }
+                    std::println(stderr, "etherdbg: recv failed: {}",
+                                 to_string(recv_result.error()));
+                    return {};
                 }
-                std::println(stderr, "etherdbg: recv failed: {}",
-                             to_string(recv_result.error()));
-                return {};
-            }
 
-            if (transport.verbose) {
                 auto& raw = *recv_result;
-                std::println(stderr, "[read] received {} bytes", raw.size());
-                std::print(stderr, "[read] data: ");
-                for (size_t i = 0; i < std::min(raw.size(), size_t{64}); i++)
-                    std::print(stderr, "{:02X} ", raw[i]);
-                if (raw.size() > 64)
-                    std::print(stderr, "...");
-                std::println(stderr, "");
+                if (transport.verbose) {
+                    std::println(stderr, "[read] received {} bytes", raw.size());
+                    std::print(stderr, "[read] data: ");
+                    for (size_t i = 0; i < std::min(raw.size(), size_t{64}); i++)
+                        std::print(stderr, "{:02X} ", raw[i]);
+                    if (raw.size() > 64)
+                        std::print(stderr, "...");
+                    std::println(stderr, "");
+                }
+
+                uint32_t resp_addr;
+                uint8_t resp_seq;
+                std::vector<uint8_t> resp_data;
+
+                if (!protocol::parse_read_response(raw, resp_addr,
+                                                    resp_seq, resp_data)) {
+                    if (verbose)
+                        std::println("  Skipping non-response packet ({} bytes, first byte ${:02X})",
+                                     raw.size(), raw.empty() ? 0 : raw[0]);
+                    continue;  /* try receiving again */
+                }
+
+                if (resp_seq != seq || resp_addr != cur_addr) {
+                    if (verbose)
+                        std::println("  Mismatched seq/addr (got seq={} addr=${:07X}), skipping",
+                                     resp_seq, resp_addr);
+                    continue;  /* try receiving again */
+                }
+
+                result.insert(result.end(), resp_data.begin(), resp_data.end());
+                got_response = true;
+                break;
             }
 
-            uint32_t resp_addr;
-            uint8_t resp_seq;
-            std::vector<uint8_t> resp_data;
-
-            if (!protocol::parse_read_response(*recv_result, resp_addr,
-                                                resp_seq, resp_data)) {
-                if (verbose)
-                    std::println("  Invalid response, retry {}/{}",
-                                 retry + 1, DEFAULT_READ_RETRIES);
-                continue;
-            }
-
-            if (resp_seq != seq || resp_addr != cur_addr) {
-                if (verbose)
-                    std::println("  Mismatched seq/addr, retry {}/{}",
-                                 retry + 1, DEFAULT_READ_RETRIES);
-                continue;
-            }
-
-            result.insert(result.end(), resp_data.begin(), resp_data.end());
-            got_response = true;
-            break;
+            if (got_response)
+                break;
         }
 
         if (!got_response) {
