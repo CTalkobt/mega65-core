@@ -73,23 +73,21 @@ auto to_printable(T val) {
 // ---------------------------------------------------------------------------
 
 /*
- * Build a fake etherdbg read response packet for testing.
+ * Build a fake etherdbg read response (UDP payload only, as recvfrom delivers).
  */
 static std::vector<uint8_t> make_read_response(uint32_t addr, uint8_t seq,
                                                  std::span<const uint8_t> data)
 {
     std::vector<uint8_t> pkt(etherdbg::protocol::RESPONSE_HEADER_SIZE + data.size(), 0);
-    /* Fake MACs */
-    pkt[12] = 0x65; pkt[13] = 0x02;  /* EtherType */
-    pkt[14] = 'R';                     /* response type */
-    pkt[15] = seq;
-    pkt[16] = addr & 0xff;
-    pkt[17] = (addr >> 8) & 0xff;
-    pkt[18] = (addr >> 16) & 0xff;
-    pkt[19] = (addr >> 24) & 0xff;
+    pkt[0] = 'R';
+    pkt[1] = seq;
+    pkt[2] = addr & 0xff;
+    pkt[3] = (addr >> 8) & 0xff;
+    pkt[4] = (addr >> 16) & 0xff;
+    pkt[5] = (addr >> 24) & 0xff;
     auto count = static_cast<uint16_t>(data.size());
-    pkt[20] = count & 0xff;
-    pkt[21] = (count >> 8) & 0xff;
+    pkt[6] = count & 0xff;
+    pkt[7] = (count >> 8) & 0xff;
     std::copy(data.begin(), data.end(),
               pkt.begin() + etherdbg::protocol::RESPONSE_HEADER_SIZE);
     return pkt;
@@ -470,6 +468,10 @@ TEST(protocol_parse_read_response_valid) {
     std::vector<uint8_t> data = {0xDE, 0xAD, 0xBE, 0xEF};
     auto pkt = make_read_response(0x0800, 0x42, data);
 
+    /* Verify the raw packet layout */
+    ASSERT_EQ(pkt[0], uint8_t{'R'});
+    ASSERT_EQ(pkt[1], uint8_t{0x42});
+
     uint32_t addr;
     uint8_t seq;
     std::vector<uint8_t> result;
@@ -481,9 +483,9 @@ TEST(protocol_parse_read_response_valid) {
     ASSERT_EQ(result[3], 0xEF);
 }
 
-TEST(protocol_parse_read_response_bad_ethertype) {
+TEST(protocol_parse_read_response_bad_type) {
     std::vector<uint8_t> pkt(30, 0);
-    pkt[12] = 0x08; pkt[13] = 0x00;  // IPv4, not etherdbg
+    pkt[0] = 'X';  // wrong response type (not 'R')
     uint32_t addr; uint8_t seq; std::vector<uint8_t> data;
     ASSERT_TRUE(!etherdbg::protocol::parse_read_response(pkt, addr, seq, data));
 }

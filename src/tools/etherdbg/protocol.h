@@ -42,21 +42,20 @@ std::vector<uint8_t> build_done();
 
 /*
  * Maximum bytes that can be read in a single memory-read packet.
- * Limited by the Ethernet TX buffer size minus the response header.
  *
- * Response frame layout (in TX buffer at $6000):
- *   [0..5]   Destination MAC (copied from requester's source MAC)
- *   [6..11]  Source MAC (our MAC from $D6E9-$D6EE)
- *   [12..13] EtherType: $6502 (custom marker for etherdbg responses)
- *   [14]     Response type: 'R' = read response
- *   [15]     Sequence number (echoed from request)
- *   [16..19] Source address (32-bit, little-endian)
- *   [20..21] Byte count (16-bit, little-endian)
- *   [22..]   Data bytes
+ * The response is sent as a proper IPv6 UDP packet back to the sender.
+ * The 45GS02 routine copies the incoming IPv6+UDP headers from the RX
+ * buffer, swaps src/dst, and places our payload in the UDP data area.
+ *
+ * UDP payload layout (what the host receives via recvfrom):
+ *   [0]      Response type: 'R' = read response
+ *   [1]      Sequence number
+ *   [2..5]   Source address (32-bit, little-endian)
+ *   [6..7]   Byte count (16-bit, little-endian)
+ *   [8..]    Data bytes
  */
-inline constexpr int RESPONSE_HEADER_SIZE = 22;
+inline constexpr int RESPONSE_HEADER_SIZE = 8;
 inline constexpr int MAX_READ_SIZE = 1024;
-inline constexpr uint16_t ETHERTYPE_ETHERDBG = 0x6502;
 
 /*
  * Build a memory-read packet. When executed on the MEGA65, this routine:

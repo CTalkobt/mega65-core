@@ -191,148 +191,210 @@ static std::vector<uint8_t> build_mem_read_routine(uint32_t address,
                                                     uint8_t seq)
 {
     /*
-     * TX buffer layout we're building at $6000:
-     *   [00-05]  Dest MAC (requester)
-     *   [06-0B]  Source MAC (ours)
-     *   [0C-0D]  EtherType: $65, $02 (big-endian on wire)
-     *   [0E]     'R' (read response)
-     *   [0F]     Sequence number
-     *   [10-13]  Source address (little-endian)
-     *   [14-15]  Byte count (little-endian)
-     *   [16..]   Data
+     * Build a proper IPv6 UDP response by copying the incoming packet's
+     * headers from RX to TX, swapping src/dst, and appending our payload.
      *
-     * Total TX frame size = 0x16 + count
+     * RX buffer layout (basepage $00, absolute addresses):
+     *   $6802-$6807  Dest MAC (us)
+     *   $6808-$680D  Source MAC (requester)
+     *   $680E-$680F  EtherType ($86DD)
+     *   $6810-$6817  IPv6 ver/class/flow + payload_len + next_hdr + hop
+     *   $6818-$6827  IPv6 source addr (requester, 16 bytes)
+     *   $6828-$6837  IPv6 dest addr (us, 16 bytes)
+     *   $6838-$6839  UDP source port (requester)
+     *   $683A-$683B  UDP dest port (4510)
+     *   $683C-$683D  UDP length
+     *   $683E-$683F  UDP checksum
+     *   $6840+       UDP payload (our code)
+     *
+     * TX buffer (no length prefix, same layout minus 2):
+     *   $6000-$6005  Dest MAC
+     *   $6006-$600B  Source MAC
+     *   $600C-$600D  EtherType
+     *   $600E-$6035  IPv6 header (40 bytes)
+     *   $6036-$603D  UDP header (8 bytes)
+     *   $603E+       UDP payload (our response data)
+     *
+     * Response UDP payload:
+     *   [0]     'R' (read response)
+     *   [1]     Sequence number
+     *   [2..5]  Source address (32-bit LE)
+     *   [6..7]  Byte count (16-bit LE)
+     *   [8..]   Data bytes
      */
-    constexpr uint16_t tx_base = 0x6000;
-    constexpr uint16_t rx_src_mac = 0x6808;  /* requester's MAC in RX frame */
-    constexpr uint16_t our_mac_reg = 0xD6E9; /* our MAC in I/O registers */
+
+    constexpr uint16_t tx = 0x6000;       /* TX buffer base */
+    constexpr uint16_t rx = 0x6802;       /* RX frame start (after 2-byte length) */
     constexpr uint16_t tx_size_lo = 0xD6E2;
     constexpr uint16_t tx_size_hi = 0xD6E3;
     constexpr uint16_t tx_trigger = 0xD6E4;
-    constexpr int header_size = 0x16;
-    uint16_t frame_size = header_size + count;
 
-    std::vector<uint8_t> buf(256, 0);  /* routine + DMA list, will resize */
+    /* Offsets within the Ethernet frame */
+    constexpr int OFF_DST_MAC    = 0;
+    constexpr int OFF_SRC_MAC    = 6;
+    constexpr int OFF_IPV6_PLEN  = 14 + 4;   /* payload length in IPv6 hdr */
+    constexpr int OFF_IPV6_SRC   = 14 + 8;   /* source address */
+    constexpr int OFF_IPV6_DST   = 14 + 24;  /* dest address */
+    constexpr int OFF_UDP        = 14 + 40;   /* UDP header start */
+    constexpr int OFF_UDP_SPORT  = OFF_UDP;
+    constexpr int OFF_UDP_DPORT  = OFF_UDP + 2;
+    constexpr int OFF_UDP_LEN    = OFF_UDP + 4;
+    constexpr int OFF_UDP_CSUM   = OFF_UDP + 6;
+    constexpr int OFF_UDP_DATA   = OFF_UDP + 8; /* = 62 = $3E */
+
+    constexpr int ETH_HDR_SIZE = OFF_UDP_DATA; /* 62 bytes: ETH + IPv6 + UDP */
+    constexpr int RESP_HDR_SIZE = 8; /* 'R', seq, addr[4], count[2] */
+    uint16_t udp_payload_size = RESP_HDR_SIZE + count;
+    uint16_t udp_total = 8 + udp_payload_size;  /* UDP header + payload */
+    uint16_t frame_size = ETH_HDR_SIZE + udp_payload_size;
+
+    std::vector<uint8_t> buf(384, 0);
     int pc = 0;
 
     /* Required: packet must start with LDA #imm ($A9) */
-    emit(buf, pc, 0xa9);  /* LDA #$00 */
-    emit(buf, pc, 0x00);
+    emit(buf, pc, 0xa9); emit(buf, pc, 0x00);
 
-    /* --- Copy requester's MAC ($6808-$680D) → TX dest MAC ($6000-$6005) --- */
-    /* LDX #5 */
-    emit(buf, pc, 0xa2); emit(buf, pc, 0x05);
-    /* loop: LDA $6808,X */
-    int mac_loop = pc;
-    emit(buf, pc, 0xbd); emit16(buf, pc, rx_src_mac);
+    /* --- Step 1: Copy entire ETH+IPv6+UDP header from RX to TX --- */
+    /* Copy 62 bytes from $6802 to $6000 using a loop */
+    /* LDX #61 ($3D) */
+    emit(buf, pc, 0xa2); emit(buf, pc, ETH_HDR_SIZE - 1);
+    /* loop: LDA $6802,X */
+    int copy_loop = pc;
+    emit(buf, pc, 0xbd); emit16(buf, pc, rx);
     /* STA $6000,X */
-    emit(buf, pc, 0x9d); emit16(buf, pc, tx_base);
+    emit(buf, pc, 0x9d); emit16(buf, pc, tx);
     /* DEX */
     emit(buf, pc, 0xca);
     /* BPL loop */
-    emit(buf, pc, 0x10); emit(buf, pc, static_cast<uint8_t>(mac_loop - pc));
+    emit(buf, pc, 0x10); emit(buf, pc, static_cast<uint8_t>(copy_loop - pc));
 
-    /* --- Copy our MAC ($D6E9-$D6EE) → TX source MAC ($6006-$600B) --- */
+    /* --- Step 2: Swap dest/src MAC (6 bytes each) --- */
     /* LDX #5 */
     emit(buf, pc, 0xa2); emit(buf, pc, 0x05);
-    /* loop: LDA $D6E9,X */
-    int mac2_loop = pc;
-    emit(buf, pc, 0xbd); emit16(buf, pc, our_mac_reg);
-    /* STA $6006,X */
-    emit(buf, pc, 0x9d); emit16(buf, pc, tx_base + 6);
+    int swap_mac_loop = pc;
+    /* LDA TX+OFF_DST_MAC,X  (currently = original dst = us) */
+    emit(buf, pc, 0xbd); emit16(buf, pc, tx + OFF_DST_MAC);
+    /* PHA */
+    emit(buf, pc, 0x48);
+    /* LDA TX+OFF_SRC_MAC,X  (currently = original src = requester) */
+    emit(buf, pc, 0xbd); emit16(buf, pc, tx + OFF_SRC_MAC);
+    /* STA TX+OFF_DST_MAC,X  (requester → dst) */
+    emit(buf, pc, 0x9d); emit16(buf, pc, tx + OFF_DST_MAC);
+    /* PLA */
+    emit(buf, pc, 0x68);
+    /* STA TX+OFF_SRC_MAC,X  (us → src) */
+    emit(buf, pc, 0x9d); emit16(buf, pc, tx + OFF_SRC_MAC);
     /* DEX */
     emit(buf, pc, 0xca);
     /* BPL loop */
-    emit(buf, pc, 0x10); emit(buf, pc, static_cast<uint8_t>(mac2_loop - pc));
+    emit(buf, pc, 0x10); emit(buf, pc, static_cast<uint8_t>(swap_mac_loop - pc));
 
-    /* --- Write EtherType $6502 (big-endian on wire: $65, $02) --- */
-    emit(buf, pc, 0xa9); emit(buf, pc, 0x65);     /* LDA #$65 */
-    emit(buf, pc, 0x8d); emit16(buf, pc, tx_base + 0x0C);  /* STA $600C */
-    emit(buf, pc, 0xa9); emit(buf, pc, 0x02);     /* LDA #$02 */
-    emit(buf, pc, 0x8d); emit16(buf, pc, tx_base + 0x0D);  /* STA $600D */
+    /* --- Step 3: Swap IPv6 src/dst addresses (16 bytes each) --- */
+    /* LDX #15 */
+    emit(buf, pc, 0xa2); emit(buf, pc, 0x0f);
+    int swap_ip_loop = pc;
+    emit(buf, pc, 0xbd); emit16(buf, pc, tx + OFF_IPV6_SRC);
+    emit(buf, pc, 0x48);  /* PHA */
+    emit(buf, pc, 0xbd); emit16(buf, pc, tx + OFF_IPV6_DST);
+    emit(buf, pc, 0x9d); emit16(buf, pc, tx + OFF_IPV6_SRC);
+    emit(buf, pc, 0x68);  /* PLA */
+    emit(buf, pc, 0x9d); emit16(buf, pc, tx + OFF_IPV6_DST);
+    emit(buf, pc, 0xca);  /* DEX */
+    emit(buf, pc, 0x10); emit(buf, pc, static_cast<uint8_t>(swap_ip_loop - pc));
 
-    /* --- Response type 'R' --- */
+    /* --- Step 4: Swap UDP ports (2 bytes each) --- */
+    /* LDX #1 */
+    emit(buf, pc, 0xa2); emit(buf, pc, 0x01);
+    int swap_port_loop = pc;
+    emit(buf, pc, 0xbd); emit16(buf, pc, tx + OFF_UDP_SPORT);
+    emit(buf, pc, 0x48);
+    emit(buf, pc, 0xbd); emit16(buf, pc, tx + OFF_UDP_DPORT);
+    emit(buf, pc, 0x9d); emit16(buf, pc, tx + OFF_UDP_SPORT);
+    emit(buf, pc, 0x68);
+    emit(buf, pc, 0x9d); emit16(buf, pc, tx + OFF_UDP_DPORT);
+    emit(buf, pc, 0xca);
+    emit(buf, pc, 0x10); emit(buf, pc, static_cast<uint8_t>(swap_port_loop - pc));
+
+    /* --- Step 5: Update IPv6 payload length (big-endian) --- */
+    emit(buf, pc, 0xa9); emit(buf, pc, (udp_total >> 8) & 0xff);
+    emit(buf, pc, 0x8d); emit16(buf, pc, tx + OFF_IPV6_PLEN);
+    emit(buf, pc, 0xa9); emit(buf, pc, udp_total & 0xff);
+    emit(buf, pc, 0x8d); emit16(buf, pc, tx + OFF_IPV6_PLEN + 1);
+
+    /* --- Step 6: Update UDP length (big-endian) --- */
+    emit(buf, pc, 0xa9); emit(buf, pc, (udp_total >> 8) & 0xff);
+    emit(buf, pc, 0x8d); emit16(buf, pc, tx + OFF_UDP_LEN);
+    emit(buf, pc, 0xa9); emit(buf, pc, udp_total & 0xff);
+    emit(buf, pc, 0x8d); emit16(buf, pc, tx + OFF_UDP_LEN + 1);
+
+    /* --- Step 7: Zero UDP checksum (optional for IPv6 UDP per RFC 6935) --- */
+    emit(buf, pc, 0xa9); emit(buf, pc, 0x00);
+    emit(buf, pc, 0x8d); emit16(buf, pc, tx + OFF_UDP_CSUM);
+    emit(buf, pc, 0x8d); emit16(buf, pc, tx + OFF_UDP_CSUM + 1);
+
+    /* --- Step 8: Write response header into UDP payload area --- */
+    uint16_t payload_base = tx + OFF_UDP_DATA;
+
+    /* 'R' response type */
     emit(buf, pc, 0xa9); emit(buf, pc, 'R');
-    emit(buf, pc, 0x8d); emit16(buf, pc, tx_base + 0x0E);
+    emit(buf, pc, 0x8d); emit16(buf, pc, payload_base + 0);
 
-    /* --- Sequence number --- */
+    /* Sequence number */
     emit(buf, pc, 0xa9); emit(buf, pc, seq);
-    emit(buf, pc, 0x8d); emit16(buf, pc, tx_base + 0x0F);
+    emit(buf, pc, 0x8d); emit16(buf, pc, payload_base + 1);
 
-    /* --- Source address (4 bytes, little-endian) --- */
+    /* Source address (4 bytes, little-endian) */
     emit(buf, pc, 0xa9); emit(buf, pc, address & 0xff);
-    emit(buf, pc, 0x8d); emit16(buf, pc, tx_base + 0x10);
+    emit(buf, pc, 0x8d); emit16(buf, pc, payload_base + 2);
     emit(buf, pc, 0xa9); emit(buf, pc, (address >> 8) & 0xff);
-    emit(buf, pc, 0x8d); emit16(buf, pc, tx_base + 0x11);
+    emit(buf, pc, 0x8d); emit16(buf, pc, payload_base + 3);
     emit(buf, pc, 0xa9); emit(buf, pc, (address >> 16) & 0xff);
-    emit(buf, pc, 0x8d); emit16(buf, pc, tx_base + 0x12);
+    emit(buf, pc, 0x8d); emit16(buf, pc, payload_base + 4);
     emit(buf, pc, 0xa9); emit(buf, pc, (address >> 24) & 0xff);
-    emit(buf, pc, 0x8d); emit16(buf, pc, tx_base + 0x13);
+    emit(buf, pc, 0x8d); emit16(buf, pc, payload_base + 5);
 
-    /* --- Byte count (2 bytes, little-endian) --- */
+    /* Byte count (2 bytes, little-endian) */
     emit(buf, pc, 0xa9); emit(buf, pc, count & 0xff);
-    emit(buf, pc, 0x8d); emit16(buf, pc, tx_base + 0x14);
+    emit(buf, pc, 0x8d); emit16(buf, pc, payload_base + 6);
     emit(buf, pc, 0xa9); emit(buf, pc, (count >> 8) & 0xff);
-    emit(buf, pc, 0x8d); emit16(buf, pc, tx_base + 0x15);
+    emit(buf, pc, 0x8d); emit16(buf, pc, payload_base + 7);
 
-    /* --- DMA copy: source memory → TX buffer data area ($6016+) --- */
-    /* Set DMA source MB */
+    /* --- Step 9: DMA copy target memory → TX UDP payload data area --- */
     uint8_t src_mb = (address >> 20) & 0xff;
-    emit(buf, pc, 0xa9); emit(buf, pc, src_mb);   /* LDA #src_mb */
-    emit(buf, pc, 0x8d); emit16(buf, pc, 0xD705); /* STA $D705 */
+    emit(buf, pc, 0xa9); emit(buf, pc, src_mb);
+    emit(buf, pc, 0x8d); emit16(buf, pc, 0xD705); /* DMA source MB */
+    emit(buf, pc, 0xa9); emit(buf, pc, 0xff);
+    emit(buf, pc, 0x8d); emit16(buf, pc, 0xD706); /* DMA dest MB = $FF */
+    emit(buf, pc, 0xa9); emit(buf, pc, 0x0d);
+    emit(buf, pc, 0x8d); emit16(buf, pc, 0xD702); /* DMA list bank */
+    emit(buf, pc, 0xa9); emit(buf, pc, 0xe8);
+    emit(buf, pc, 0x8d); emit16(buf, pc, 0xD701); /* DMA list addr high */
+    emit(buf, pc, 0xa9); emit(buf, pc, 0xff);
+    emit(buf, pc, 0x8d); emit16(buf, pc, 0xD704); /* DMA list MB */
 
-    /* Set DMA dest MB = $FF (TX buffer is in $FFDE000) */
-    emit(buf, pc, 0xa9); emit(buf, pc, 0xff);     /* LDA #$FF */
-    emit(buf, pc, 0x8d); emit16(buf, pc, 0xD706); /* STA $D706 */
-
-    /* Set DMA list address: bank high byte */
-    emit(buf, pc, 0xa9); emit(buf, pc, 0x0d);     /* LDA #$0D */
-    emit(buf, pc, 0x8d); emit16(buf, pc, 0xD702); /* STA $D702 */
-
-    /* DMA list address high byte (will be patched with actual list position) */
-    emit(buf, pc, 0xa9); emit(buf, pc, 0xe8);     /* LDA #$E8 */
-    emit(buf, pc, 0x8d); emit16(buf, pc, 0xD701); /* STA $D701 */
-
-    /* DMA list MB = $FF */
-    emit(buf, pc, 0xa9); emit(buf, pc, 0xff);     /* LDA #$FF */
-    emit(buf, pc, 0x8d); emit16(buf, pc, 0xD704); /* STA $D704 */
-
-    /* Record where the DMA list will be, so we can set the trigger address */
-    int dma_list_offset = pc + 5;  /* after the STA $D700 instruction */
-    /* Compute the low byte of the DMA list's address in the ETH RX buffer.
-     * Our code starts at $6840 (packet payload), so the DMA list at
-     * offset 'dma_list_offset' lives at $6840 + dma_list_offset.
-     * The true address is $FFDE840 + dma_list_offset.
-     * Low byte for $D700 = ($40 + dma_list_offset) & 0xFF */
+    int dma_list_offset = pc + 5;
     uint8_t dma_list_lo = (0x40 + dma_list_offset) & 0xff;
+    emit(buf, pc, 0xa9); emit(buf, pc, dma_list_lo);
+    emit(buf, pc, 0x8d); emit16(buf, pc, 0xD700); /* trigger DMA */
 
-    /* Trigger DMA by writing list low byte to $D700 */
-    emit(buf, pc, 0xa9); emit(buf, pc, dma_list_lo); /* LDA #list_lo */
-    emit(buf, pc, 0x8d); emit16(buf, pc, 0xD700);    /* STA $D700 = trigger */
+    /* Embedded DMA list */
+    emit(buf, pc, 0x00);                   /* copy, no chain */
+    emit16(buf, pc, count);                /* byte count */
+    emit16(buf, pc, address & 0xffff);     /* source addr low 16 */
+    emit(buf, pc, (address >> 16) & 0x0f); /* source bank */
+    /* Dest: TX buffer's UDP payload data area.
+     * TX buf at $DE000, UDP data at offset OFF_UDP_DATA + RESP_HDR_SIZE.
+     * So dest = $E000 + OFF_UDP_DATA + RESP_HDR_SIZE */
+    emit16(buf, pc, static_cast<uint16_t>(0xE000 + OFF_UDP_DATA + RESP_HDR_SIZE));
+    emit(buf, pc, 0x0d);                   /* dest bank */
+    emit16(buf, pc, 0x0000);               /* modulo */
 
-    /* --- Embedded DMA list (F018B format) --- */
-    /* DMA command: copy, no chain */
-    emit(buf, pc, 0x00);
-    /* Byte count */
-    emit16(buf, pc, count);
-    /* Source address low 16 bits */
-    emit16(buf, pc, address & 0xffff);
-    /* Source bank */
-    emit(buf, pc, (address >> 16) & 0x0f);
-    /* Dest address: $E016 (TX buffer $DE000 + $16 = header offset) */
-    emit16(buf, pc, 0xE000 + header_size);
-    /* Dest bank: $0D */
-    emit(buf, pc, 0x0d);
-    /* Modulo (unused) */
-    emit16(buf, pc, 0x0000);
-
-    /* --- After DMA: set TX frame size and trigger --- */
+    /* --- Step 10: Set TX frame size and trigger --- */
     emit(buf, pc, 0xa9); emit(buf, pc, frame_size & 0xff);
     emit(buf, pc, 0x8d); emit16(buf, pc, tx_size_lo);
     emit(buf, pc, 0xa9); emit(buf, pc, (frame_size >> 8) & 0xff);
     emit(buf, pc, 0x8d); emit16(buf, pc, tx_size_hi);
 
-    /* Trigger TX: write $01 to $D6E4 */
     emit(buf, pc, 0xa9); emit(buf, pc, 0x01);
     emit(buf, pc, 0x8d); emit16(buf, pc, tx_trigger);
 
@@ -469,25 +531,28 @@ bool parse_read_response(std::span<const uint8_t> packet,
                           uint32_t& address, uint8_t& seq,
                           std::vector<uint8_t>& data)
 {
-    /* Minimum: 14 bytes ETH header + 8 bytes our header = 22 */
+    /*
+     * The response arrives as a UDP payload (kernel strips ETH+IPv6+UDP headers).
+     * Layout:
+     *   [0]     'R' (response type)
+     *   [1]     Sequence number
+     *   [2..5]  Source address (32-bit LE)
+     *   [6..7]  Byte count (16-bit LE)
+     *   [8..]   Data bytes
+     */
     if (packet.size() < RESPONSE_HEADER_SIZE)
         return false;
 
-    /* Check EtherType: $65, $02 (big-endian) */
-    if (packet[12] != 0x65 || packet[13] != 0x02)
+    if (packet[0] != 'R')
         return false;
 
-    /* Check response type */
-    if (packet[14] != 'R')
-        return false;
+    seq = packet[1];
+    address = packet[2]
+            | (static_cast<uint32_t>(packet[3]) << 8)
+            | (static_cast<uint32_t>(packet[4]) << 16)
+            | (static_cast<uint32_t>(packet[5]) << 24);
 
-    seq = packet[15];
-    address = packet[16]
-            | (static_cast<uint32_t>(packet[17]) << 8)
-            | (static_cast<uint32_t>(packet[18]) << 16)
-            | (static_cast<uint32_t>(packet[19]) << 24);
-
-    uint16_t count = packet[20] | (static_cast<uint16_t>(packet[21]) << 8);
+    uint16_t count = packet[6] | (static_cast<uint16_t>(packet[7]) << 8);
 
     if (packet.size() < static_cast<size_t>(RESPONSE_HEADER_SIZE) + count)
         return false;
