@@ -40,4 +40,59 @@ std::vector<uint8_t> build_dma_load(uint16_t addr, uint8_t bank, uint8_t mb,
  */
 std::vector<uint8_t> build_done();
 
+/*
+ * Maximum bytes that can be read in a single memory-read packet.
+ * Limited by the Ethernet TX buffer size minus the response header.
+ *
+ * Response frame layout (in TX buffer at $6000):
+ *   [0..5]   Destination MAC (copied from requester's source MAC)
+ *   [6..11]  Source MAC (our MAC from $D6E9-$D6EE)
+ *   [12..13] EtherType: $6502 (custom marker for etherdbg responses)
+ *   [14]     Response type: 'R' = read response
+ *   [15]     Sequence number (echoed from request)
+ *   [16..19] Source address (32-bit, little-endian)
+ *   [20..21] Byte count (16-bit, little-endian)
+ *   [22..]   Data bytes
+ */
+inline constexpr int RESPONSE_HEADER_SIZE = 22;
+inline constexpr int MAX_READ_SIZE = 1024;
+inline constexpr uint16_t ETHERTYPE_ETHERDBG = 0x6502;
+
+/*
+ * Build a memory-read packet. When executed on the MEGA65, this routine:
+ *   1. Copies the requester's MAC into the TX buffer as destination
+ *   2. Sets our MAC as source
+ *   3. Writes the etherdbg response header
+ *   4. DMA-copies 'count' bytes from the target address into the TX payload
+ *   5. Sets TX size and triggers transmit
+ *
+ * The host must call transport.recv() after sending to collect the response.
+ */
+std::vector<uint8_t> build_mem_read(uint32_t address, uint16_t count,
+                                     uint8_t seq);
+
+/*
+ * Build a memory-write packet. This is a thin wrapper around build_dma_load
+ * that accepts a full 28-bit address.
+ */
+std::vector<uint8_t> build_mem_write(uint32_t address,
+                                      std::span<const uint8_t> data,
+                                      uint8_t seq);
+
+/*
+ * Build a memory-fill packet. When executed on the MEGA65, this routine
+ * uses DMA fill to set 'count' bytes at 'address' to 'value'.
+ */
+std::vector<uint8_t> build_mem_fill(uint32_t address, uint16_t count,
+                                     uint8_t value, uint8_t seq);
+
+/*
+ * Parse a memory-read response packet received from the MEGA65.
+ * Returns true if the packet is a valid etherdbg read response.
+ * On success, fills in address, seq, and data.
+ */
+bool parse_read_response(std::span<const uint8_t> packet,
+                          uint32_t& address, uint8_t& seq,
+                          std::vector<uint8_t>& data);
+
 } // namespace etherdbg::protocol

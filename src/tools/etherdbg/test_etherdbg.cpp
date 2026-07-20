@@ -72,9 +72,33 @@ auto to_printable(T val) {
 // Mock transport for command-layer tests
 // ---------------------------------------------------------------------------
 
+/*
+ * Build a fake etherdbg read response packet for testing.
+ */
+static std::vector<uint8_t> make_read_response(uint32_t addr, uint8_t seq,
+                                                 std::span<const uint8_t> data)
+{
+    std::vector<uint8_t> pkt(etherdbg::protocol::RESPONSE_HEADER_SIZE + data.size(), 0);
+    /* Fake MACs */
+    pkt[12] = 0x65; pkt[13] = 0x02;  /* EtherType */
+    pkt[14] = 'R';                     /* response type */
+    pkt[15] = seq;
+    pkt[16] = addr & 0xff;
+    pkt[17] = (addr >> 8) & 0xff;
+    pkt[18] = (addr >> 16) & 0xff;
+    pkt[19] = (addr >> 24) & 0xff;
+    auto count = static_cast<uint16_t>(data.size());
+    pkt[20] = count & 0xff;
+    pkt[21] = (count >> 8) & 0xff;
+    std::copy(data.begin(), data.end(),
+              pkt.begin() + etherdbg::protocol::RESPONSE_HEADER_SIZE);
+    return pkt;
+}
+
 class MockTransport final : public etherdbg::Transport {
 public:
     std::vector<std::vector<uint8_t>> sent_packets;
+    std::vector<std::vector<uint8_t>> recv_queue;  /* canned responses */
     bool fail_sends = false;
 
     std::expected<size_t, etherdbg::TransportError>
@@ -87,7 +111,11 @@ public:
 
     std::expected<std::vector<uint8_t>, etherdbg::TransportError>
     recv(size_t /*max_len*/, int /*timeout_ms*/) override {
-        return std::unexpected(etherdbg::TransportError::Timeout);
+        if (recv_queue.empty())
+            return std::unexpected(etherdbg::TransportError::Timeout);
+        auto pkt = std::move(recv_queue.front());
+        recv_queue.erase(recv_queue.begin());
+        return pkt;
     }
 };
 
@@ -397,6 +425,140 @@ TEST(transport_error_to_string) {
                 == "send failed");
     ASSERT_TRUE(etherdbg::to_string(etherdbg::TransportError::Timeout)
                 == "timeout");
+}
+
+// ===========================================================================
+// Protocol: memory read/write/fill packet tests
+// ===========================================================================
+
+TEST(protocol_mem_read_starts_with_lda) {
+    auto pkt = etherdbg::protocol::build_mem_read(0x0800, 16, 0);
+    ASSERT_EQ(pkt[0], 0xa9);
+}
+
+TEST(protocol_mem_read_ends_with_rts) {
+    auto pkt = etherdbg::protocol::build_mem_read(0x0800, 16, 0);
+    ASSERT_EQ(pkt.back(), 0x60);  // RTS
+}
+
+TEST(protocol_mem_write_is_dma_load) {
+    std::vector<uint8_t> data = {0xAA, 0xBB};
+    auto pkt = etherdbg::protocol::build_mem_write(0x12345, data, 0x07);
+    // Should be a standard DMA load packet
+    ASSERT_EQ(static_cast<int>(pkt.size()),
+              etherdbg::protocol::DMA_PACKET_SIZE);
+    ASSERT_EQ(pkt[0], 0xa9);
+    // Check address patching: $12345 → addr=$2345, bank=$01, mb=$00
+    ASSERT_EQ(pkt[0x36], 0x45);
+    ASSERT_EQ(pkt[0x37], 0x23);
+    ASSERT_EQ(pkt[0x38], 0x01);  // bank = (0x12345 >> 16) & 0xff
+    ASSERT_EQ(pkt[0x3c], 0x00);  // mb = (0x12345 >> 20) & 0xff
+    ASSERT_EQ(pkt[0x3b], 0x07);  // seq
+}
+
+TEST(protocol_mem_fill_starts_with_lda) {
+    auto pkt = etherdbg::protocol::build_mem_fill(0x0400, 1000, 0x20, 0);
+    ASSERT_EQ(pkt[0], 0xa9);
+}
+
+TEST(protocol_mem_fill_ends_with_rts) {
+    auto pkt = etherdbg::protocol::build_mem_fill(0x0400, 1000, 0x20, 0);
+    ASSERT_EQ(pkt.back(), 0x60);
+}
+
+TEST(protocol_parse_read_response_valid) {
+    std::vector<uint8_t> data = {0xDE, 0xAD, 0xBE, 0xEF};
+    auto pkt = make_read_response(0x0800, 0x42, data);
+
+    uint32_t addr;
+    uint8_t seq;
+    std::vector<uint8_t> result;
+    ASSERT_TRUE(etherdbg::protocol::parse_read_response(pkt, addr, seq, result));
+    ASSERT_EQ(addr, uint32_t{0x0800});
+    ASSERT_EQ(seq, uint8_t{0x42});
+    ASSERT_EQ(result.size(), size_t{4});
+    ASSERT_EQ(result[0], 0xDE);
+    ASSERT_EQ(result[3], 0xEF);
+}
+
+TEST(protocol_parse_read_response_bad_ethertype) {
+    std::vector<uint8_t> pkt(30, 0);
+    pkt[12] = 0x08; pkt[13] = 0x00;  // IPv4, not etherdbg
+    uint32_t addr; uint8_t seq; std::vector<uint8_t> data;
+    ASSERT_TRUE(!etherdbg::protocol::parse_read_response(pkt, addr, seq, data));
+}
+
+TEST(protocol_parse_read_response_too_short) {
+    std::vector<uint8_t> pkt(10, 0);  // way too short
+    uint32_t addr; uint8_t seq; std::vector<uint8_t> data;
+    ASSERT_TRUE(!etherdbg::protocol::parse_read_response(pkt, addr, seq, data));
+}
+
+TEST(protocol_parse_read_response_truncated_data) {
+    std::vector<uint8_t> src = {0xAA, 0xBB, 0xCC};
+    auto pkt = make_read_response(0x0800, 0, src);
+    pkt.resize(pkt.size() - 2);  // truncate 2 bytes of data
+    uint32_t addr; uint8_t seq; std::vector<uint8_t> data;
+    ASSERT_TRUE(!etherdbg::protocol::parse_read_response(pkt, addr, seq, data));
+}
+
+// ===========================================================================
+// Command: read/write/fill tests
+// ===========================================================================
+
+TEST(cmd_read_memory_success) {
+    MockTransport mock;
+    std::vector<uint8_t> response_data = {0x01, 0x02, 0x03, 0x04};
+    mock.recv_queue.push_back(make_read_response(0x0800, 0, response_data));
+
+    auto result = etherdbg::cmd_read_memory(mock, 0x0800, 4, false);
+    ASSERT_EQ(result.size(), size_t{4});
+    ASSERT_EQ(result[0], 0x01);
+    ASSERT_EQ(result[3], 0x04);
+    // Should have sent exactly 1 packet
+    ASSERT_EQ(mock.sent_packets.size(), size_t{1});
+}
+
+TEST(cmd_read_memory_timeout_returns_empty) {
+    MockTransport mock;
+    // No canned responses → will timeout all retries
+    auto result = etherdbg::cmd_read_memory(mock, 0x0800, 16, false);
+    ASSERT_TRUE(result.empty());
+}
+
+TEST(cmd_write_memory_small) {
+    MockTransport mock;
+    std::vector<uint8_t> data = {0xCA, 0xFE};
+    int ret = etherdbg::cmd_write_memory(mock, 0x2000, data, false);
+    ASSERT_EQ(ret, 0);
+    ASSERT_EQ(mock.sent_packets.size(), size_t{1});
+    // Verify it's a DMA load packet targeting $2000
+    ASSERT_EQ(mock.sent_packets[0][0x36], 0x00);
+    ASSERT_EQ(mock.sent_packets[0][0x37], 0x20);
+}
+
+TEST(cmd_write_memory_multi_chunk) {
+    MockTransport mock;
+    std::vector<uint8_t> data(etherdbg::protocol::MAX_CHUNK_SIZE + 10, 0x55);
+    int ret = etherdbg::cmd_write_memory(mock, 0x0800, data, false);
+    ASSERT_EQ(ret, 0);
+    ASSERT_EQ(mock.sent_packets.size(), size_t{2});
+}
+
+TEST(cmd_fill_memory_success) {
+    MockTransport mock;
+    int ret = etherdbg::cmd_fill_memory(mock, 0x0400, 1000, 0x20, false);
+    ASSERT_EQ(ret, 0);
+    ASSERT_EQ(mock.sent_packets.size(), size_t{1});
+    // Packet should start with LDA #imm
+    ASSERT_EQ(mock.sent_packets[0][0], 0xa9);
+}
+
+TEST(cmd_fill_memory_send_failure) {
+    MockTransport mock;
+    mock.fail_sends = true;
+    int ret = etherdbg::cmd_fill_memory(mock, 0x0400, 100, 0x00, false);
+    ASSERT_EQ(ret, -1);
 }
 
 // ===========================================================================
