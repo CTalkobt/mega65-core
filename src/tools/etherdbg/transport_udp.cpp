@@ -67,7 +67,7 @@ public:
         if (verbose) {
             char addr_str[INET6_ADDRSTRLEN];
             inet_ntop(AF_INET6, &dest_.sin6_addr, addr_str, sizeof(addr_str));
-            std::println(stderr, "[udp] sent {} bytes to {}%{}",
+            std::println(stderr, "[udp] -> sent {} bytes to {}%{}",
                          sent, addr_str, dest_.sin6_scope_id);
         }
         return static_cast<size_t>(sent);
@@ -106,7 +106,7 @@ public:
         if (verbose) {
             char addr_str[INET6_ADDRSTRLEN];
             inet_ntop(AF_INET6, &sender.sin6_addr, addr_str, sizeof(addr_str));
-            std::println(stderr, "[udp] received {} bytes from {}", n, addr_str);
+            std::println(stderr, "[udp] <- received {} bytes from {}", n, addr_str);
         }
         return buf;
     }
@@ -179,6 +179,27 @@ std::unique_ptr<Transport> create_udp_transport(std::string_view ip_addr,
     /* Set multicast interface for link-local */
     setsockopt(sockfd, IPPROTO_IPV6, IPV6_MULTICAST_IF,
                &dest.sin6_scope_id, sizeof(dest.sin6_scope_id));
+
+    /* Bind to port 4510 so we can receive replies.
+     * The MEGA65's read routine swaps src/dst ports, so the response
+     * comes back to whatever port we sent from. We must send FROM
+     * port 4510 (which ETHLOAD expects) and receive ON port 4510. */
+    int enable = 1;
+    setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable));
+#ifndef _WIN32
+    setsockopt(sockfd, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(enable));
+#endif
+
+    sockaddr_in6 bind_addr{};
+    bind_addr.sin6_family = AF_INET6;
+    bind_addr.sin6_port = htons(static_cast<uint16_t>(port));
+    bind_addr.sin6_addr = in6addr_any;
+    if (bind(sockfd, reinterpret_cast<sockaddr*>(&bind_addr),
+             sizeof(bind_addr)) < 0) {
+        std::println(stderr, "etherdbg: bind port {}: {}", port, strerror(errno));
+        ::close(sockfd);
+        return nullptr;
+    }
 
     return std::make_unique<UdpTransport>(sockfd, dest);
 }

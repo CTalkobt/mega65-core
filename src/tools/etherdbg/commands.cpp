@@ -112,9 +112,9 @@ std::vector<uint8_t> cmd_read_memory(Transport& transport,
         auto packet = protocol::build_mem_read(cur_addr, remaining, seq);
 
         if (transport.verbose) {
-            std::println(stderr, "[read] sending {} byte routine to read {} bytes from ${:07X}",
+            std::println(stderr, "[read] -> sending {} byte routine to read {} bytes from ${:07X}",
                          packet.size(), remaining, cur_addr);
-            std::print(stderr, "[read] packet hex: ");
+            std::print(stderr, "[read] -> hex: ");
             for (size_t i = 0; i < std::min(packet.size(), size_t{64}); i++)
                 std::print(stderr, "{:02X} ", packet[i]);
             if (packet.size() > 64)
@@ -153,8 +153,8 @@ std::vector<uint8_t> cmd_read_memory(Transport& transport,
 
                 auto& raw = *recv_result;
                 if (transport.verbose) {
-                    std::println(stderr, "[read] received {} bytes", raw.size());
-                    std::print(stderr, "[read] data: ");
+                    std::println(stderr, "[read] <- received {} bytes", raw.size());
+                    std::print(stderr, "[read] <- hex: ");
                     for (size_t i = 0; i < std::min(raw.size(), size_t{64}); i++)
                         std::print(stderr, "{:02X} ", raw[i]);
                     if (raw.size() > 64)
