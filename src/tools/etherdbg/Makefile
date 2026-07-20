@@ -11,12 +11,22 @@ SRCS = etherdbg.cpp commands.cpp protocol.cpp transport_udp.cpp
 OBJS = $(SRCS:.cpp=.o)
 TARGET = etherdbg
 
-.PHONY: all clean
+TEST_SRCS = test_etherdbg.cpp commands.cpp protocol.cpp
+TEST_OBJS = $(TEST_SRCS:.cpp=.o)
+TEST_TARGET = test_etherdbg
+
+.PHONY: all clean test
 
 all: $(TARGET)
 
 $(TARGET): $(OBJS)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
+
+$(TEST_TARGET): $(TEST_OBJS)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
+
+test: $(TEST_TARGET)
+	./$(TEST_TARGET)
 
 %.o: %.cpp
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
@@ -26,6 +36,7 @@ etherdbg.o: etherdbg.cpp transport.h transport_udp.h commands.h
 commands.o: commands.cpp commands.h protocol.h transport.h
 protocol.o: protocol.cpp protocol.h
 transport_udp.o: transport_udp.cpp transport.h transport_udp.h
+test_etherdbg.o: test_etherdbg.cpp protocol.h transport.h commands.h
 
 clean:
-	rm -f $(OBJS) $(TARGET)
+	rm -f $(OBJS) $(TEST_OBJS) $(TARGET) $(TEST_TARGET)
