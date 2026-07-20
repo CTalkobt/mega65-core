@@ -131,20 +131,22 @@ std::vector<uint8_t> cmd_read_memory(Transport& transport,
                 return {};
             }
 
-            /* Try receiving multiple times within each retry window,
-             * since beacon packets ("mega65") may arrive on the same
-             * socket and need to be skipped. */
-            for (int recv_attempt = 0; recv_attempt < 10; recv_attempt++) {
+            /* Try receiving multiple packets within the timeout window,
+             * since beacon packets ("mega65") arrive continuously on
+             * the same socket and need to be skipped. Use short per-recv
+             * timeouts that add up to the overall budget. */
+            constexpr int RECV_SLICE_MS = 200;
+            int budget_ms = DEFAULT_RECV_TIMEOUT_MS;
+            while (budget_ms > 0) {
+                int slice = std::min(budget_ms, RECV_SLICE_MS);
+                budget_ms -= slice;
                 auto recv_result = transport.recv(
                     protocol::RESPONSE_HEADER_SIZE + remaining + 256,
-                    DEFAULT_RECV_TIMEOUT_MS);
+                    slice);
 
                 if (!recv_result) {
                     if (recv_result.error() == TransportError::Timeout) {
-                        if (verbose)
-                            std::println("  Timeout, retry {}/{}",
-                                         retry + 1, DEFAULT_READ_RETRIES);
-                        break;  /* go to next retry (re-send) */
+                        continue;  /* try next slice until budget exhausted */
                     }
                     std::println(stderr, "etherdbg: recv failed: {}",
                                  to_string(recv_result.error()));
@@ -188,6 +190,8 @@ std::vector<uint8_t> cmd_read_memory(Transport& transport,
 
             if (got_response)
                 break;
+            if (verbose)
+                std::println("  No response, retry {}/{}", retry + 1, DEFAULT_READ_RETRIES);
         }
 
         if (!got_response) {
