@@ -17,11 +17,13 @@
  *   etherdbg screen [ip] [file.png]          Screenshot (ASCII + PNG)
  */
 
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <print>
 #include <string_view>
 #include <charconv>
+#include <thread>
 
 #include "transport_udp.h"
 #include "commands.h"
@@ -298,6 +300,34 @@ int main(int argc, char** argv)
         int ret = etherdbg::cmd_screen_shot(*transport, png_file,
                                              verbose >= 1);
         return ret == 0 ? 0 : 1;
+    }
+
+    if (command == "ping") {
+        auto transport = create_transport();
+
+        /* Simplest possible executable packet: LDA #$00; INC $D020; RTS
+         * If ETHLOAD accepts and executes it, the border colour will change. */
+        std::vector<uint8_t> ping_pkt = {
+            0xa9, 0x00,             /* LDA #$00 (required $A9 prefix) */
+            0xee, 0x20, 0xd0,       /* INC $D020 (change border colour) */
+            0x60                    /* RTS */
+        };
+
+        std::println("Sending ping (INC $D020) — watch the MEGA65 border...");
+        for (int i = 0; i < 5; i++) {
+            auto result = transport->send(ping_pkt);
+            if (!result) {
+                std::println(stderr, "etherdbg: send failed: {}",
+                             etherdbg::to_string(result.error()));
+                return 1;
+            }
+            if (verbose >= 1)
+                std::println("  Sent ping #{}", i + 1);
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
+        std::println("If the border changed colour, ETHLOAD is receiving packets.");
+        std::println("If not, check: Shift+Pound active? DIP switch 2 ON? Firewall?");
+        return 0;
     }
 
     std::println(stderr, "Unknown command: {}", command);
