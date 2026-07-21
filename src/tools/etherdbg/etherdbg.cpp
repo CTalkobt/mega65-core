@@ -20,6 +20,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <getopt.h>
 #include <print>
@@ -219,8 +220,14 @@ int main(int argc, char** argv)
     }
 
     /* Remaining positional arg = PRG filename */
-    if (optind < argc)
+    if (optind < argc) {
         filename = argv[optind++];
+        /* Check file exists early, before connecting */
+        if (!std::filesystem::exists(filename)) {
+            std::println(stderr, "etherdbg: file not found: '{}'", filename);
+            return 1;
+        }
+    }
 
     /* Parse extra args for debug commands that need them */
     if (do_read && optind < argc)
