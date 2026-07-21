@@ -13,17 +13,13 @@
 
 namespace etherdbg {
 
-bool cmd_connect(Transport& transport, bool verbose)
+static bool try_echo(Transport& transport, int attempts, bool verbose)
 {
     auto echo_pkt = protocol::build_echo();
 
-    for (int i = 0; i < 10; i++) {
-        if (verbose && i == 0)
-            std::println("Connecting to ETHLOAD...");
-
+    for (int i = 0; i < attempts; i++) {
         transport.send(echo_pkt);
 
-        /* Drain responses, looking for the echo back from MEGA65 */
         constexpr int RECV_SLICE_MS = 200;
         int budget_ms = 1000;
         while (budget_ms > 0) {
@@ -34,18 +30,41 @@ bool cmd_connect(Transport& transport, bool verbose)
                 continue;
 
             auto& raw = *result;
-            /* Echo response is 1024 bytes with our ethlet echoed back */
             if (raw.size() >= 1024 && raw[0] == 0xa9) {
                 if (verbose)
                     std::println("  ETHLOAD connected (attempt {}).", i + 1);
                 return true;
             }
-            /* Skip beacons and other packets */
         }
     }
+    return false;
+}
+
+bool cmd_connect(Transport& transport, bool verbose)
+{
+    if (verbose)
+        std::println("Connecting to ETHLOAD...");
+
+    /* Try direct echo first (works if NDP is still resolved) */
+    if (try_echo(transport, 3, verbose))
+        return true;
+
+    /* NDP probably failed — send hyperrupt to resolve it, then retry.
+     * The hyperrupt triggers ETHLOAD reload which sends beacons and
+     * responds to our echo, resolving NDP as a side effect. */
+    if (verbose)
+        std::println("  Sending hyperrupt to activate ETHLOAD...");
+    transport.activate();
+
+    /* Wait for ETHLOAD to reload from SD card */
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+
+    /* Retry echo — should work now that hyperrupt resolved NDP */
+    if (try_echo(transport, 10, verbose))
+        return true;
 
     if (verbose)
-        std::println(stderr, "etherdbg: ETHLOAD did not respond to echo.");
+        std::println(stderr, "etherdbg: ETHLOAD did not respond.");
     return false;
 }
 

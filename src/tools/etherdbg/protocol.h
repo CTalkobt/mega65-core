@@ -49,6 +49,18 @@ std::vector<uint8_t> build_done();
 std::vector<uint8_t> build_echo();
 
 /*
+ * Build the reset-to-C64 ethlet (equivalent to etherload -4).
+ * Resets the MEGA65 to C64 BASIC 2 mode.
+ */
+std::vector<uint8_t> build_reset_c64();
+
+/*
+ * Build the reset-to-MEGA65 ethlet (equivalent to etherload -5).
+ * Resets the MEGA65 to MEGA65 BASIC 65 mode.
+ */
+std::vector<uint8_t> build_reset_m65();
+
+/*
  * Maximum bytes that can be read in a single memory-read packet.
  *
  * The response is sent as a proper IPv6 UDP packet back to the sender.

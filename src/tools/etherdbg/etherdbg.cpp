@@ -307,6 +307,22 @@ int main(int argc, char** argv)
         return ret == 0 ? 0 : 1;
     }
 
+    if (command == "reset64" || command == "-4") {
+        auto transport = create_transport();
+        auto pkt = etherdbg::protocol::build_reset_c64();
+        std::println("Resetting MEGA65 to C64 mode...");
+        transport->send(pkt);
+        return 0;
+    }
+
+    if (command == "reset65" || command == "-5") {
+        auto transport = create_transport();
+        auto pkt = etherdbg::protocol::build_reset_m65();
+        std::println("Resetting MEGA65 to MEGA65 mode...");
+        transport->send(pkt);
+        return 0;
+    }
+
     if (command == "echo") {
         auto transport = create_transport();
 

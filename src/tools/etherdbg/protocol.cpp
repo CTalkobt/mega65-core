@@ -537,6 +537,32 @@ std::vector<uint8_t> build_echo()
     return buf;
 }
 
+std::vector<uint8_t> build_reset_c64()
+{
+    /* Complete 1024-byte ethlet from mega65-tools ethlet_all_done_basic2.c */
+    static const uint8_t ethlet[1024] = {
+        #include "ethlet_all_done_basic2.inc"
+    };
+    std::vector<uint8_t> buf(ethlet, ethlet + 1024);
+    /* Patch: no file loaded, no run, no cart detect */
+    constexpr int OFF_RESTORE_PRG = 0x6A4E - 0x6840;
+    buf[OFF_RESTORE_PRG] = 0;
+    return buf;
+}
+
+std::vector<uint8_t> build_reset_m65()
+{
+    /* Complete 1024-byte ethlet from mega65-tools ethlet_all_done_basic65.c */
+    static const uint8_t ethlet[1024] = {
+        #include "ethlet_all_done_basic65.inc"
+    };
+    std::vector<uint8_t> buf(ethlet, ethlet + 1024);
+    /* Patch: no file loaded, no run, no cart detect */
+    constexpr int OFF_RESTORE_PRG = 0x6A3D - 0x6840;
+    buf[OFF_RESTORE_PRG] = 0;
+    return buf;
+}
+
 std::vector<uint8_t> build_mem_read(uint32_t address, uint16_t count,
                                      uint8_t seq)
 {

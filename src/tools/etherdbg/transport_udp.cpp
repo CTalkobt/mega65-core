@@ -59,58 +59,11 @@ public:
     UdpTransport(const UdpTransport&) = delete;
     UdpTransport& operator=(const UdpTransport&) = delete;
 
-    /*
-     * Full activation sequence matching mega65-tools etherload:
-     * 1. Send hyperrupt trigger to ff02::1 (loads ETHLOAD.M65 from SD)
-     * 2. Send echo ethlet to unicast, retry until ETHLOAD echoes it back
-     * This handles both ETHLOAD boot time and NDP resolution delay.
-     */
-    /*
-     * Establish connection by sending the echo ethlet repeatedly
-     * until ETHLOAD responds. The echo response is a unicast packet
-     * from the MEGA65 which resolves NDP as a side effect.
-     * Note: the echo ethlet causes temporary screen garbage on the MEGA65
-     * due to DMA copying the Ethernet buffer.
-     */
+    /* Send the hyperrupt trigger to ff02::1 to activate ETHLOAD.
+     * This resolves NDP as a side effect (ETHLOAD sends beacons
+     * which populate the neighbor table). */
     void activate() override {
-        auto echo_pkt = etherdbg::protocol::build_echo();
-        for (int i = 0; i < 15; i++) {
-            ssize_t s;
-            do {
-                s = sendto(sockfd_, echo_pkt.data(), echo_pkt.size(), 0,
-                           reinterpret_cast<const sockaddr*>(&dest_),
-                           sizeof(dest_));
-            } while (s < 0 && errno == EAGAIN);
-
-            /* Wait for echo response using select() since socket is non-blocking */
-            fd_set fds;
-            timeval tv{};
-            FD_ZERO(&fds);
-            FD_SET(sockfd_, &fds);
-            tv.tv_sec = 0;
-            tv.tv_usec = 500000;  /* 500ms per attempt */
-            int sel = select(sockfd_ + 1, &fds, nullptr, nullptr, &tv);
-            if (sel > 0) {
-                /* Drain all available packets, looking for echo from MEGA65 */
-                for (int j = 0; j < 20; j++) {
-                    uint8_t resp[2048];
-                    sockaddr_in6 src{};
-                    socklen_t src_len = sizeof(src);
-                    ssize_t n = recvfrom(sockfd_, resp, sizeof(resp), 0,
-                                         reinterpret_cast<sockaddr*>(&src),
-                                         &src_len);
-                    if (n <= 0) break;
-                    if (n >= 1024 &&
-                        std::memcmp(&src.sin6_addr, &dest_.sin6_addr, 16) == 0) {
-                        std::println(stderr,
-                            "etherdbg: ETHLOAD connected (echo #{}).", i + 1);
-                        return;
-                    }
-                    /* Skip beacons and other packets */
-                }
-            }
-        }
-        std::println(stderr, "etherdbg: Warning: no echo response from ETHLOAD.");
+        send_hyperrupt();
     }
 
     /* After activation, switch to multicast for all sends.
