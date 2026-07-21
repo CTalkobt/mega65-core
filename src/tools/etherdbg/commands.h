@@ -74,4 +74,14 @@ int cmd_fill_memory(Transport& transport,
                     uint32_t address, uint32_t count, uint8_t value,
                     bool verbose);
 
+/*
+ * Load a file using the mega65-tools dma_load ethlet.
+ * This is the proper etherload-compatible file transfer.
+ *
+ * Returns end address (start + bytes loaded), or -1 on error.
+ */
+int cmd_load_file(Transport& transport, std::string_view filename,
+                  uint32_t load_address, bool use_prg_header,
+                  int file_offset, bool rom_write_enable, bool verbose);
+
 } // namespace etherdbg

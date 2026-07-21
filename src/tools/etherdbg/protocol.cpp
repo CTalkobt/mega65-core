@@ -537,29 +537,125 @@ std::vector<uint8_t> build_echo()
     return buf;
 }
 
-std::vector<uint8_t> build_reset_c64()
+std::vector<uint8_t> build_reset_c64(const ResetC64Options& opts)
 {
-    /* Complete 1024-byte ethlet from mega65-tools ethlet_all_done_basic2.c */
     static const uint8_t ethlet[1024] = {
         #include "ethlet_all_done_basic2.inc"
     };
     std::vector<uint8_t> buf(ethlet, ethlet + 1024);
-    /* Patch: no file loaded, no run, no cart detect */
-    constexpr int OFF_RESTORE_PRG = 0x6A4E - 0x6840;
-    buf[OFF_RESTORE_PRG] = 0;
+
+    /* Patch fields — offsets from ethlet_all_done_basic2_map.h */
+    constexpr int BASE = 0x6840;
+    constexpr int OFF_DATA_END_ADDR     = 0x6ACE - BASE;
+    constexpr int OFF_DO_RUN            = 0x6AD0 - BASE;
+    constexpr int OFF_ENABLE_CART_SIG   = 0x6A4C - BASE;
+    constexpr int OFF_ENABLE_ROM_LOAD   = 0x6A4D - BASE;
+    constexpr int OFF_RESTORE_PRG       = 0x6A4E - BASE;
+    constexpr int OFF_SET_VIDEO_MODE    = 0x6A4F - BASE;
+    constexpr int OFF_D81_FILENAME      = 0x6A0C - BASE;
+
+    buf[OFF_DATA_END_ADDR]     = opts.end_address & 0xff;
+    buf[OFF_DATA_END_ADDR + 1] = (opts.end_address >> 8) & 0xff;
+    buf[OFF_DO_RUN]            = opts.do_run ? 1 : 0;
+    buf[OFF_ENABLE_CART_SIG]   = opts.cart_detect ? 1 : 0;
+    buf[OFF_ENABLE_ROM_LOAD]   = opts.enable_default_rom_load ? 1 : 0;
+    buf[OFF_RESTORE_PRG]       = opts.restore_prg ? 1 : 0;
+    buf[OFF_SET_VIDEO_MODE]    = opts.video_mode > 0 ? 0x01
+                               : opts.video_mode < 0 ? 0xff : 0x00;
+
+    if (!opts.d81_filename.empty()) {
+        size_t len = std::min(opts.d81_filename.size(), size_t{63});
+        std::copy_n(opts.d81_filename.data(), len, buf.begin() + OFF_D81_FILENAME);
+    }
+
     return buf;
 }
 
-std::vector<uint8_t> build_reset_m65()
+std::vector<uint8_t> build_reset_m65(const ResetM65Options& opts)
 {
-    /* Complete 1024-byte ethlet from mega65-tools ethlet_all_done_basic65.c */
     static const uint8_t ethlet[1024] = {
         #include "ethlet_all_done_basic65.inc"
     };
     std::vector<uint8_t> buf(ethlet, ethlet + 1024);
-    /* Patch: no file loaded, no run, no cart detect */
-    constexpr int OFF_RESTORE_PRG = 0x6A3D - 0x6840;
-    buf[OFF_RESTORE_PRG] = 0;
+
+    constexpr int BASE = 0x6840;
+    constexpr int OFF_AUTOSTART         = 0x6A3F - BASE;
+    constexpr int OFF_ENABLE_ROM_LOAD   = 0x6A3C - BASE;
+    constexpr int OFF_RESTORE_PRG       = 0x6A3D - BASE;
+    constexpr int OFF_SET_VIDEO_MODE    = 0x6A3E - BASE;
+    constexpr int OFF_D81_FILENAME      = 0x69FC - BASE;
+
+    buf[OFF_AUTOSTART]         = opts.end_address & 0xff;
+    buf[OFF_AUTOSTART + 1]     = (opts.end_address >> 8) & 0xff;
+    buf[OFF_AUTOSTART + 2]     = opts.do_run ? 1 : 0;
+    buf[OFF_AUTOSTART + 3]     = opts.cart_detect ? 1 : 0;
+    buf[OFF_ENABLE_ROM_LOAD]   = opts.enable_default_rom_load ? 1 : 0;
+    buf[OFF_RESTORE_PRG]       = opts.restore_prg ? 1 : 0;
+    buf[OFF_SET_VIDEO_MODE]    = opts.video_mode > 0 ? 0x01
+                               : opts.video_mode < 0 ? 0xff : 0x00;
+
+    if (!opts.d81_filename.empty()) {
+        size_t len = std::min(opts.d81_filename.size(), size_t{63});
+        std::copy_n(opts.d81_filename.data(), len, buf.begin() + OFF_D81_FILENAME);
+    }
+
+    return buf;
+}
+
+std::vector<uint8_t> build_jump(uint16_t address,
+                                 const std::string& d81_filename)
+{
+    static const uint8_t ethlet[1024] = {
+        #include "ethlet_all_done_jump.inc"
+    };
+    std::vector<uint8_t> buf(ethlet, ethlet + 1024);
+
+    constexpr int BASE = 0x6840;
+    constexpr int OFF_JUMP_ADDR    = 0x692F - BASE;
+    constexpr int OFF_D81_FILENAME = 0x690E - BASE;
+
+    buf[OFF_JUMP_ADDR + 1] = address & 0xff;
+    buf[OFF_JUMP_ADDR + 2] = (address >> 8) & 0xff;
+
+    if (!d81_filename.empty()) {
+        size_t len = std::min(d81_filename.size(), size_t{63});
+        std::copy_n(d81_filename.data(), len, buf.begin() + OFF_D81_FILENAME);
+    }
+
+    return buf;
+}
+
+std::vector<uint8_t> build_dma_load_ethlet(const DmaLoadOptions& opts,
+                                            std::span<const uint8_t> data)
+{
+    static const uint8_t ethlet[1260] = {
+        #include "ethlet_dma_load.inc"
+    };
+    std::vector<uint8_t> buf(ethlet, ethlet + 1260);
+
+    constexpr int BASE = 0x6840;
+    constexpr int OFF_ROM_WRITE     = 0x6853 - BASE;
+    constexpr int OFF_DEST_MB       = 0x6864 - BASE;
+    constexpr int OFF_BYTE_COUNT    = 0x6867 - BASE;
+    constexpr int OFF_DEST_ADDR     = 0x686C - BASE;
+    constexpr int OFF_DEST_BANK     = 0x686E - BASE;
+    constexpr int OFF_SEQ_NUM       = 0x68FE - BASE;
+    constexpr int OFF_DATA          = 0x6900 - BASE;
+
+    buf[OFF_ROM_WRITE]     = opts.rom_write_enable ? 0x01 : 0x00;
+    buf[OFF_DEST_MB]       = (opts.dest_address >> 20) & 0xff;
+    buf[OFF_BYTE_COUNT]    = opts.byte_count & 0xff;
+    buf[OFF_BYTE_COUNT+1]  = (opts.byte_count >> 8) & 0xff;
+    buf[OFF_DEST_ADDR]     = opts.dest_address & 0xff;
+    buf[OFF_DEST_ADDR+1]   = (opts.dest_address >> 8) & 0xff;
+    buf[OFF_DEST_BANK]     = (opts.dest_address >> 16) & 0x0f;
+    buf[OFF_SEQ_NUM]       = opts.seq_num & 0xff;
+    buf[OFF_SEQ_NUM+1]     = (opts.seq_num >> 8) & 0xff;
+
+    size_t copy_len = std::min(data.size(), size_t{1024 - OFF_DATA});
+    if (!data.empty())
+        std::copy_n(data.data(), copy_len, buf.begin() + OFF_DATA);
+
     return buf;
 }
 

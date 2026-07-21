@@ -19,34 +19,15 @@ namespace etherdbg {
  * Receiving a beacon means ETHLOAD is running. The beacon is a unicast-
  * source packet which resolves NDP as a side effect.
  */
-static bool wait_for_beacon(Transport& transport, int timeout_ms, bool verbose)
-{
-    constexpr int SLICE_MS = 200;
-    int budget = timeout_ms;
-    while (budget > 0) {
-        int slice = std::min(budget, SLICE_MS);
-        budget -= slice;
-        auto result = transport.recv(2048, slice);
-        if (!result)
-            continue;
-        auto& raw = *result;
-        if (raw.size() == 6 && std::memcmp(raw.data(), "mega65", 6) == 0) {
-            if (verbose)
-                std::println("  Received ETHLOAD beacon.");
-            return true;
-        }
-    }
-    return false;
-}
-
 bool cmd_connect(Transport& transport, bool verbose)
 {
     if (verbose)
         std::println("Connecting to ETHLOAD...");
 
-    /* Skip hyperrupt if ETHLOAD is already running (discovered via beacon).
-     * NDP resolves when the kernel sends unicast packets — it queues them,
-     * sends NDP solicitation, and ETHLOAD's ND code responds. */
+    /* Send hyperrupt to resolve NDP. This causes ETHLOAD to reload
+     * which briefly disrupts the screen, but NDP cannot be resolved
+     * without it (MEGA65's IPv6 is minimal — no NDP responses). */
+    transport.activate();
 
     return true;
 }
@@ -321,6 +302,75 @@ int cmd_fill_memory(Transport& transport,
                      count, address, value);
 
     return 0;
+}
+
+int cmd_load_file(Transport& transport, std::string_view filename,
+                  uint32_t load_address, bool use_prg_header,
+                  int file_offset, bool rom_write_enable, bool verbose)
+{
+    std::ifstream file(std::string(filename), std::ios::binary);
+    if (!file) {
+        std::println(stderr, "etherdbg: cannot open '{}'", filename);
+        return -1;
+    }
+
+    uint32_t address = load_address;
+
+    if (use_prg_header) {
+        std::array<uint8_t, 2> hdr{};
+        file.read(reinterpret_cast<char*>(hdr.data()), 2);
+        if (file.gcount() < 2) {
+            std::println(stderr, "etherdbg: failed to read load address from '{}'",
+                         filename);
+            return -1;
+        }
+        address = hdr[0] | (hdr[1] << 8);
+    }
+
+    if (file_offset > 0)
+        file.seekg(file_offset, std::ios::cur);
+
+    if (verbose)
+        std::println("Loading '{}' at ${:04X}", filename, address);
+
+    uint32_t start_address = address;
+    constexpr int DATA_SIZE = 1024 - (0x6900 - 0x6840); /* max data per ethlet */
+    std::array<uint8_t, DATA_SIZE> filebuf{};
+    uint16_t seq = 0;
+
+    while (file.read(reinterpret_cast<char*>(filebuf.data()), DATA_SIZE)
+           || file.gcount() > 0) {
+        auto bytes = static_cast<int>(file.gcount());
+        if (verbose)
+            std::println("  ${:07X}: {} bytes (seq {})", address, bytes, seq);
+
+        protocol::DmaLoadOptions opts;
+        opts.dest_address = address;
+        opts.byte_count = bytes;
+        opts.rom_write_enable = rom_write_enable;
+        opts.seq_num = seq;
+
+        auto packet = protocol::build_dma_load_ethlet(opts,
+            std::span<const uint8_t>(filebuf.data(), bytes));
+
+        auto result = transport.send(packet);
+        if (!result) {
+            std::println(stderr, "etherdbg: send failed: {}",
+                         to_string(result.error()));
+            return -1;
+        }
+
+        std::this_thread::sleep_for(
+            std::chrono::microseconds(DEFAULT_PACKET_DELAY_US));
+        seq++;
+        address += bytes;
+    }
+
+    if (verbose)
+        std::println("Loaded {} bytes to ${:04X}-${:04X}",
+                     address - start_address, start_address, address);
+
+    return static_cast<int>(address);
 }
 
 } // namespace etherdbg

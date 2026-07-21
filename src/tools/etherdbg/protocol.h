@@ -18,6 +18,7 @@
 
 #include <cstdint>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace etherdbg::protocol {
@@ -50,15 +51,53 @@ std::vector<uint8_t> build_echo();
 
 /*
  * Build the reset-to-C64 ethlet (equivalent to etherload -4).
- * Resets the MEGA65 to C64 BASIC 2 mode.
+ * Patches: end_addr, do_run, cart_detect, d81, rom, video_mode, restore_prg.
  */
-std::vector<uint8_t> build_reset_c64();
+struct ResetC64Options {
+    uint16_t end_address = 0;
+    bool do_run = false;
+    bool cart_detect = false;
+    bool restore_prg = false;
+    bool enable_default_rom_load = true;
+    int video_mode = 0;   /* 0=unchanged, 1=PAL, -1=NTSC */
+    std::string d81_filename;
+};
+std::vector<uint8_t> build_reset_c64(const ResetC64Options& opts = {});
 
 /*
  * Build the reset-to-MEGA65 ethlet (equivalent to etherload -5).
- * Resets the MEGA65 to MEGA65 BASIC 65 mode.
+ * Same patch fields as C64 reset but different ethlet.
  */
-std::vector<uint8_t> build_reset_m65();
+struct ResetM65Options {
+    uint16_t end_address = 0;
+    bool do_run = false;
+    bool cart_detect = false;
+    bool restore_prg = false;
+    bool enable_default_rom_load = true;
+    int video_mode = 0;
+    std::string d81_filename;
+};
+std::vector<uint8_t> build_reset_m65(const ResetM65Options& opts = {});
+
+/*
+ * Build the jump ethlet (equivalent to etherload -j).
+ * Jumps to the specified address after unmapping Ethernet buffers.
+ */
+std::vector<uint8_t> build_jump(uint16_t address,
+                                 const std::string& d81_filename = {});
+
+/*
+ * Build the DMA load ethlet for transferring data to MEGA65 memory.
+ * This is the data transfer packet used by etherload for file loading.
+ */
+struct DmaLoadOptions {
+    uint32_t dest_address = 0;
+    uint16_t byte_count = 0;
+    bool rom_write_enable = false;
+    uint16_t seq_num = 0;
+};
+std::vector<uint8_t> build_dma_load_ethlet(const DmaLoadOptions& opts,
+                                            std::span<const uint8_t> data);
 
 /*
  * Maximum bytes that can be read in a single memory-read packet.
