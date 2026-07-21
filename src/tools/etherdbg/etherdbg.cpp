@@ -163,10 +163,15 @@ int main(int argc, char** argv)
         }
 
         if (!t) {
-            std::println(stderr, "etherdbg: failed to connect to MEGA65");
+            std::println(stderr, "etherdbg: failed to create UDP transport");
             std::exit(1);
         }
         t->verbose = (verbose >= 2);
+
+        if (!etherdbg::cmd_connect(*t, verbose >= 1)) {
+            std::println(stderr, "etherdbg: failed to connect to MEGA65");
+            std::exit(1);
+        }
         return t;
     };
 
@@ -302,13 +307,50 @@ int main(int argc, char** argv)
         return ret == 0 ? 0 : 1;
     }
 
-    if (command == "ping") {
+    if (command == "echo") {
         auto transport = create_transport();
 
-        /* Simplest possible executable packet: LDA #$00; INC $D020; RTS
-         * If ETHLOAD accepts and executes it, the border colour will change. */
+        auto echo_pkt = etherdbg::protocol::build_echo();
+
+        std::println("Sending echo ethlet (identical to mega65-tools)...");
+        for (int i = 0; i < 5; i++) {
+            auto result = transport->send(echo_pkt);
+            if (!result) {
+                std::println(stderr, "etherdbg: send failed: {}",
+                             etherdbg::to_string(result.error()));
+                return 1;
+            }
+            if (verbose >= 1)
+                std::println("  Sent echo #{}", i + 1);
+
+            /* Check for echo response */
+            auto recv_result = transport->recv(2048, 1000);
+            if (recv_result) {
+                std::println("  Got response: {} bytes", recv_result->size());
+                if (verbose >= 2) {
+                    std::print("  Data: ");
+                    for (size_t j = 0; j < std::min(recv_result->size(), size_t{32}); j++)
+                        std::print("{:02X} ", (*recv_result)[j]);
+                    std::println("");
+                }
+                std::println("ETHLOAD is responding!");
+                return 0;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
+        std::println("No echo response received.");
+        return 1;
+    }
+
+    if (command == "ping") {
+        auto transport = create_transport();  /* includes echo handshake */
+
         std::vector<uint8_t> ping_pkt = {
             0xa9, 0x00,             /* LDA #$00 (required $A9 prefix) */
+            0xa9, 0x47,             /* LDA #$47  ; enable MEGA65 I/O */
+            0x8d, 0x2f, 0xd0,       /* STA $D02F */
+            0xa9, 0x53,             /* LDA #$53 */
+            0x8d, 0x2f, 0xd0,       /* STA $D02F */
             0xee, 0x20, 0xd0,       /* INC $D020 (change border colour) */
             0x60                    /* RTS */
         };
@@ -323,10 +365,9 @@ int main(int argc, char** argv)
             }
             if (verbose >= 1)
                 std::println("  Sent ping #{}", i + 1);
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
         }
-        std::println("If the border changed colour, ETHLOAD is receiving packets.");
-        std::println("If not, check: Shift+Pound active? DIP switch 2 ON? Firewall?");
+        std::println("If the border changed colour, ETHLOAD executed our code.");
         return 0;
     }
 

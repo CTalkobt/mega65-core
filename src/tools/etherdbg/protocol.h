@@ -41,6 +41,14 @@ std::vector<uint8_t> build_dma_load(uint16_t addr, uint8_t bank, uint8_t mb,
 std::vector<uint8_t> build_done();
 
 /*
+ * Build the echo ethlet — identical to mega65-tools ethlet_echo.
+ * When executed on the MEGA65, this echoes the entire received frame
+ * back to the sender (with swapped MACs, IPs, and ports).
+ * Used as a ping/ACK mechanism to confirm ETHLOAD is running.
+ */
+std::vector<uint8_t> build_echo();
+
+/*
  * Maximum bytes that can be read in a single memory-read packet.
  *
  * The response is sent as a proper IPv6 UDP packet back to the sender.

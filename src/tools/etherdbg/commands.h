@@ -23,6 +23,13 @@ inline constexpr int DEFAULT_RECV_TIMEOUT_MS = 2000;
 inline constexpr int DEFAULT_READ_RETRIES = 3;
 
 /*
+ * Establish connection by sending the echo ethlet until ETHLOAD responds.
+ * This resolves NDP and confirms ETHLOAD is running.
+ * Returns true on success.
+ */
+bool cmd_connect(Transport& transport, bool verbose);
+
+/*
  * Load a PRG file to the MEGA65.
  *
  * Reads the 2-byte load address header, then sends the file contents

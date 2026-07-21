@@ -50,6 +50,11 @@ public:
     virtual std::expected<std::vector<uint8_t>, TransportError>
     recv(size_t max_len, int timeout_ms) = 0;
 
+    /* Send a transport-specific initialization/trigger sequence.
+     * For UDP: sends the hyperrupt trigger to activate ETHLOAD.
+     * For JTAG: no-op (monitor is always active). */
+    virtual void activate() {}
+
     bool verbose = false;
 };
 

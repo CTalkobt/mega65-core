@@ -13,6 +13,42 @@
 
 namespace etherdbg {
 
+bool cmd_connect(Transport& transport, bool verbose)
+{
+    auto echo_pkt = protocol::build_echo();
+
+    for (int i = 0; i < 10; i++) {
+        if (verbose && i == 0)
+            std::println("Connecting to ETHLOAD...");
+
+        transport.send(echo_pkt);
+
+        /* Drain responses, looking for the echo back from MEGA65 */
+        constexpr int RECV_SLICE_MS = 200;
+        int budget_ms = 1000;
+        while (budget_ms > 0) {
+            int slice = std::min(budget_ms, RECV_SLICE_MS);
+            budget_ms -= slice;
+            auto result = transport.recv(2048, slice);
+            if (!result)
+                continue;
+
+            auto& raw = *result;
+            /* Echo response is 1024 bytes with our ethlet echoed back */
+            if (raw.size() >= 1024 && raw[0] == 0xa9) {
+                if (verbose)
+                    std::println("  ETHLOAD connected (attempt {}).", i + 1);
+                return true;
+            }
+            /* Skip beacons and other packets */
+        }
+    }
+
+    if (verbose)
+        std::println(stderr, "etherdbg: ETHLOAD did not respond to echo.");
+    return false;
+}
+
 int cmd_load_program(Transport& transport, std::string_view filename,
                      bool verbose)
 {
@@ -114,12 +150,12 @@ std::vector<uint8_t> cmd_read_memory(Transport& transport,
         if (transport.verbose) {
             std::println(stderr, "[read] -> sending {} byte routine to read {} bytes from ${:07X}",
                          packet.size(), remaining, cur_addr);
-            std::print(stderr, "[read] -> hex: ");
-            for (size_t i = 0; i < std::min(packet.size(), size_t{64}); i++)
+            for (size_t i = 0; i < packet.size(); i++) {
+                if (i % 16 == 0) std::print(stderr, "[read] -> {:04X}: ", i);
                 std::print(stderr, "{:02X} ", packet[i]);
-            if (packet.size() > 64)
-                std::print(stderr, "... ({} more)", packet.size() - 64);
-            std::println(stderr, "");
+                if (i % 16 == 15) std::println(stderr, "");
+            }
+            if (packet.size() % 16 != 0) std::println(stderr, "");
         }
 
         bool got_response = false;

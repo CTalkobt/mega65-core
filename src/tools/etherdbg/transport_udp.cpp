@@ -31,6 +31,7 @@
 #include <vector>
 
 #include "transport_udp.h"
+#include "protocol.h"
 
 namespace etherdbg {
 
@@ -38,10 +39,13 @@ namespace etherdbg {
 // UdpTransport - IPv6 UDP implementation
 // ---------------------------------------------------------------------------
 
+/* ETHLOAD requires packets to be 1024 bytes (padded with zeros) */
+static constexpr size_t ETHLOAD_PACKET_SIZE = 1024;
+
 class UdpTransport final : public Transport {
 public:
-    UdpTransport(int sockfd, sockaddr_in6 dest)
-        : sockfd_(sockfd), dest_(dest) {}
+    UdpTransport(int sockfd, sockaddr_in6 dest, sockaddr_in6 bcast)
+        : sockfd_(sockfd), dest_(dest), broadcast_(bcast) {}
 
     ~UdpTransport() override {
 #ifdef _WIN32
@@ -55,11 +59,163 @@ public:
     UdpTransport(const UdpTransport&) = delete;
     UdpTransport& operator=(const UdpTransport&) = delete;
 
+    /*
+     * Full activation sequence matching mega65-tools etherload:
+     * 1. Send hyperrupt trigger to ff02::1 (loads ETHLOAD.M65 from SD)
+     * 2. Send echo ethlet to unicast, retry until ETHLOAD echoes it back
+     * This handles both ETHLOAD boot time and NDP resolution delay.
+     */
+    /*
+     * Establish connection by sending the echo ethlet repeatedly
+     * until ETHLOAD responds. The echo response is a unicast packet
+     * from the MEGA65 which resolves NDP as a side effect.
+     * Note: the echo ethlet causes temporary screen garbage on the MEGA65
+     * due to DMA copying the Ethernet buffer.
+     */
+    void activate() override {
+        auto echo_pkt = etherdbg::protocol::build_echo();
+        for (int i = 0; i < 15; i++) {
+            ssize_t s;
+            do {
+                s = sendto(sockfd_, echo_pkt.data(), echo_pkt.size(), 0,
+                           reinterpret_cast<const sockaddr*>(&dest_),
+                           sizeof(dest_));
+            } while (s < 0 && errno == EAGAIN);
+
+            /* Wait for echo response using select() since socket is non-blocking */
+            fd_set fds;
+            timeval tv{};
+            FD_ZERO(&fds);
+            FD_SET(sockfd_, &fds);
+            tv.tv_sec = 0;
+            tv.tv_usec = 500000;  /* 500ms per attempt */
+            int sel = select(sockfd_ + 1, &fds, nullptr, nullptr, &tv);
+            if (sel > 0) {
+                /* Drain all available packets, looking for echo from MEGA65 */
+                for (int j = 0; j < 20; j++) {
+                    uint8_t resp[2048];
+                    sockaddr_in6 src{};
+                    socklen_t src_len = sizeof(src);
+                    ssize_t n = recvfrom(sockfd_, resp, sizeof(resp), 0,
+                                         reinterpret_cast<sockaddr*>(&src),
+                                         &src_len);
+                    if (n <= 0) break;
+                    if (n >= 1024 &&
+                        std::memcmp(&src.sin6_addr, &dest_.sin6_addr, 16) == 0) {
+                        std::println(stderr,
+                            "etherdbg: ETHLOAD connected (echo #{}).", i + 1);
+                        return;
+                    }
+                    /* Skip beacons and other packets */
+                }
+            }
+        }
+        std::println(stderr, "etherdbg: Warning: no echo response from ETHLOAD.");
+    }
+
+    /* After activation, switch to multicast for all sends.
+     * NDP entries decay quickly and unicast will stop working. */
+    void use_multicast_for_sends() {
+        dest_ = broadcast_;
+    }
+
+    /* Send the hyperrupt trigger to activate ETHLOAD */
+    void send_hyperrupt() {
+        static const uint8_t magic[] = {
+            0x65, 0x47, 0x53,       // eGS
+            0x4b, 0x45, 0x59,       // KEY
+            0x43, 0x4f, 0x44, 0x45, // CODE
+            0x00, 0x80              // $8000 = ethernet hypervisor trap
+        };
+        uint8_t trigger[128] = {};
+        std::memcpy(&trigger[0x24], magic, sizeof(magic));
+        sendto(sockfd_, trigger, sizeof(trigger), 0,
+               reinterpret_cast<const sockaddr*>(&broadcast_),
+               sizeof(broadcast_));
+        usleep(10000);
+    }
+
+    /*
+     * Send the echo ethlet repeatedly to the unicast address until
+     * ETHLOAD responds with a copy of the packet (ACK).
+     * This matches ethl_ping() from mega65-tools.
+     */
+    bool wait_for_ethload(int timeout_ms) {
+        /* ethlet_echo: the exact ping payload from mega65-tools */
+        static const uint8_t ethlet_echo[] = {
+            0xa9,0x00,0xa9,0x47,0x8d,0x2f,0xd0,0xa9,0x53,0x8d,0x2f,0xd0,
+            0xad,0xe1,0xd6,0x29,0x10,0xf0,0xf9,0x8d,0x07,0xd7,0x0b,0x80,
+            0xff,0x81,0xff,0x00,0x04,0x3e,0x04,0x02,0xe8,0x8d,0x00,0xe8,
+            0x8d,0x00,0x00,0x00,0x00,0x04,0x06,0x00,0x08,0xe8,0x8d,0x00,
+            0xe8,0x8d,0x00,0x00,0x00,0x00,0x00,0x06,0x00,0xe9,0x36,0x8d,
+            0x06,0xe8,0x8d,0x00,0x00,0x00,0xa9,0x68,0x5b,0xa5,0x38,0x85,
+            0x38,0xa5,0x39,0x85,0x39,0xa5,0x3a,0x85,0x36,0xa5,0x3b,0x85,
+            0x37,0xa9,0x3e,0x8d,0xe2,0xd6,0xa9,0x04,0x8d,0xe3,0xd6,0xa2,
+            0x0f,0xb5,0x18,0x95,0x26,0xb5,0x28,0x95,0x16,0xca,0x10,0xf5,
+            0xa9,0x01,0x8d,0xe4,0xd6,0xa9,0x00,0x5b,0x60
+        };
+
+        uint8_t ping_buf[ETHLOAD_PACKET_SIZE] = {};
+        std::memcpy(ping_buf, ethlet_echo, sizeof(ethlet_echo));
+
+        auto start = std::chrono::steady_clock::now();
+        auto deadline = start + std::chrono::milliseconds(timeout_ms);
+        int send_count = 0;
+
+        while (std::chrono::steady_clock::now() < deadline) {
+            /* Send echo to unicast address */
+            ssize_t s;
+            do {
+                s = sendto(sockfd_, ping_buf, ETHLOAD_PACKET_SIZE, 0,
+                           reinterpret_cast<const sockaddr*>(&dest_),
+                           sizeof(dest_));
+            } while (s < 0 && errno == EAGAIN);
+            send_count++;
+
+            /* Check for response (non-blocking) */
+            for (int i = 0; i < 50; i++) {
+                uint8_t resp[2048];
+                sockaddr_in6 src{};
+                socklen_t src_len = sizeof(src);
+                ssize_t n = recvfrom(sockfd_, resp, sizeof(resp), 0,
+                                     reinterpret_cast<sockaddr*>(&src),
+                                     &src_len);
+                if (n <= 0) break;
+
+                /* Check if this is the echo response from the MEGA65 */
+                if (n == ETHLOAD_PACKET_SIZE &&
+                    std::memcmp(&src.sin6_addr, &dest_.sin6_addr, 16) == 0) {
+                    if (verbose) {
+                        std::println(stderr,
+                            "[udp] ETHLOAD responded after {} sends", send_count);
+                    }
+                    return true;
+                }
+                /* Skip beacons and other packets */
+            }
+            usleep(20000);  /* 20ms between retries */
+        }
+
+        if (verbose)
+            std::println(stderr, "[udp] ETHLOAD did not respond after {} sends",
+                         send_count);
+        return false;
+    }
+
     std::expected<size_t, TransportError>
     send(std::span<const uint8_t> data) override {
-        ssize_t sent = sendto(sockfd_, data.data(), data.size(), 0,
-                              reinterpret_cast<const sockaddr*>(&dest_),
-                              sizeof(dest_));
+        /* Pad to 1024 bytes — ETHLOAD expects this size */
+        uint8_t padded[ETHLOAD_PACKET_SIZE] = {};
+        size_t copy_len = std::min(data.size(), ETHLOAD_PACKET_SIZE);
+        std::memcpy(padded, data.data(), copy_len);
+
+        ssize_t sent;
+        do {
+            sent = sendto(sockfd_, padded, ETHLOAD_PACKET_SIZE, 0,
+                          reinterpret_cast<const sockaddr*>(&dest_),
+                          sizeof(dest_));
+        } while (sent < 0 && errno == EAGAIN);
+
         if (sent < 0) {
             std::println(stderr, "etherdbg: sendto: {}", strerror(errno));
             return std::unexpected(TransportError::SendFailed);
@@ -70,7 +226,7 @@ public:
             std::println(stderr, "[udp] -> sent {} bytes to {}%{}",
                          sent, addr_str, dest_.sin6_scope_id);
         }
-        return static_cast<size_t>(sent);
+        return data.size();  /* return original size, not padded */
     }
 
     std::expected<std::vector<uint8_t>, TransportError>
@@ -114,6 +270,7 @@ public:
 private:
     int sockfd_;
     sockaddr_in6 dest_;
+    sockaddr_in6 broadcast_;
 };
 
 // ---------------------------------------------------------------------------
@@ -176,52 +333,21 @@ std::unique_ptr<Transport> create_udp_transport(std::string_view ip_addr,
         dest.sin6_scope_id = idx;
     }
 
-    /* Set multicast interface for link-local */
+    /* Set multicast interface so packets go out the correct NIC */
     setsockopt(sockfd, IPPROTO_IPV6, IPV6_MULTICAST_IF,
                &dest.sin6_scope_id, sizeof(dest.sin6_scope_id));
 
-    /* Bind socket to the interface's link-local address so that unicast
-     * packets to the MEGA65 go out the correct NIC. Without this, the
-     * kernel may route them out a different interface (e.g. WiFi instead
-     * of Ethernet). We bind to the link-local address with port 0
-     * (ephemeral), which doesn't require root privileges. */
-    if (!iface_name.empty()) {
-#ifndef _WIN32
-        /* Find this interface's link-local address */
-        ifaddrs* ifap = nullptr;
-        if (getifaddrs(&ifap) == 0) {
-            for (auto* ifa = ifap; ifa; ifa = ifa->ifa_next) {
-                if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET6)
-                    continue;
-                if (iface_name != ifa->ifa_name)
-                    continue;
-                auto* sin6 = reinterpret_cast<sockaddr_in6*>(ifa->ifa_addr);
-                if (!IN6_IS_ADDR_LINKLOCAL(&sin6->sin6_addr))
-                    continue;
+    /* Make socket non-blocking (matching mega65-tools etherload) */
+    fcntl(sockfd, F_SETFL, fcntl(sockfd, F_GETFL) | O_NONBLOCK);
 
-                sockaddr_in6 bind_addr{};
-                bind_addr.sin6_family = AF_INET6;
-                bind_addr.sin6_addr = sin6->sin6_addr;
-                bind_addr.sin6_scope_id = dest.sin6_scope_id;
-                bind_addr.sin6_port = 0;  /* ephemeral port */
-                if (bind(sockfd, reinterpret_cast<sockaddr*>(&bind_addr),
-                         sizeof(bind_addr)) < 0) {
-                    std::println(stderr, "etherdbg: bind to {}: {}",
-                                 iface_name, strerror(errno));
-                } else {
-                    char bound_addr[INET6_ADDRSTRLEN];
-                    inet_ntop(AF_INET6, &bind_addr.sin6_addr,
-                              bound_addr, sizeof(bound_addr));
-                    /* Log only in verbose — this is normal operation */
-                }
-                break;
-            }
-            freeifaddrs(ifap);
-        }
-#endif
-    }
+    /* Set up broadcast address for hyperrupt trigger */
+    sockaddr_in6 bcast{};
+    bcast.sin6_family = AF_INET6;
+    bcast.sin6_port = htons(static_cast<uint16_t>(port));
+    inet_pton(AF_INET6, "ff02::1", &bcast.sin6_addr);
+    bcast.sin6_scope_id = dest.sin6_scope_id;
 
-    return std::make_unique<UdpTransport>(sockfd, dest);
+    return std::make_unique<UdpTransport>(sockfd, dest, bcast);
 }
 
 // ---------------------------------------------------------------------------
