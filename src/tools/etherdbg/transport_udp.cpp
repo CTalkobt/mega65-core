@@ -180,9 +180,46 @@ std::unique_ptr<Transport> create_udp_transport(std::string_view ip_addr,
     setsockopt(sockfd, IPPROTO_IPV6, IPV6_MULTICAST_IF,
                &dest.sin6_scope_id, sizeof(dest.sin6_scope_id));
 
-    /* No bind — send from ephemeral port, matching mega65-tools etherload.
-     * The MEGA65's read routine swaps src/dst ports, so the response
-     * comes back to our ephemeral port automatically. */
+    /* Bind socket to the interface's link-local address so that unicast
+     * packets to the MEGA65 go out the correct NIC. Without this, the
+     * kernel may route them out a different interface (e.g. WiFi instead
+     * of Ethernet). We bind to the link-local address with port 0
+     * (ephemeral), which doesn't require root privileges. */
+    if (!iface_name.empty()) {
+#ifndef _WIN32
+        /* Find this interface's link-local address */
+        ifaddrs* ifap = nullptr;
+        if (getifaddrs(&ifap) == 0) {
+            for (auto* ifa = ifap; ifa; ifa = ifa->ifa_next) {
+                if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET6)
+                    continue;
+                if (iface_name != ifa->ifa_name)
+                    continue;
+                auto* sin6 = reinterpret_cast<sockaddr_in6*>(ifa->ifa_addr);
+                if (!IN6_IS_ADDR_LINKLOCAL(&sin6->sin6_addr))
+                    continue;
+
+                sockaddr_in6 bind_addr{};
+                bind_addr.sin6_family = AF_INET6;
+                bind_addr.sin6_addr = sin6->sin6_addr;
+                bind_addr.sin6_scope_id = dest.sin6_scope_id;
+                bind_addr.sin6_port = 0;  /* ephemeral port */
+                if (bind(sockfd, reinterpret_cast<sockaddr*>(&bind_addr),
+                         sizeof(bind_addr)) < 0) {
+                    std::println(stderr, "etherdbg: bind to {}: {}",
+                                 iface_name, strerror(errno));
+                } else {
+                    char bound_addr[INET6_ADDRSTRLEN];
+                    inet_ntop(AF_INET6, &bind_addr.sin6_addr,
+                              bound_addr, sizeof(bound_addr));
+                    /* Log only in verbose — this is normal operation */
+                }
+                break;
+            }
+            freeifaddrs(ifap);
+        }
+#endif
+    }
 
     return std::make_unique<UdpTransport>(sockfd, dest);
 }
