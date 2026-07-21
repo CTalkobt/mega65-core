@@ -180,26 +180,9 @@ std::unique_ptr<Transport> create_udp_transport(std::string_view ip_addr,
     setsockopt(sockfd, IPPROTO_IPV6, IPV6_MULTICAST_IF,
                &dest.sin6_scope_id, sizeof(dest.sin6_scope_id));
 
-    /* Bind to port 4510 so we can receive replies.
+    /* No bind — send from ephemeral port, matching mega65-tools etherload.
      * The MEGA65's read routine swaps src/dst ports, so the response
-     * comes back to whatever port we sent from. We must send FROM
-     * port 4510 (which ETHLOAD expects) and receive ON port 4510. */
-    int enable = 1;
-    setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable));
-#ifndef _WIN32
-    setsockopt(sockfd, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(enable));
-#endif
-
-    sockaddr_in6 bind_addr{};
-    bind_addr.sin6_family = AF_INET6;
-    bind_addr.sin6_port = htons(static_cast<uint16_t>(port));
-    bind_addr.sin6_addr = in6addr_any;
-    if (bind(sockfd, reinterpret_cast<sockaddr*>(&bind_addr),
-             sizeof(bind_addr)) < 0) {
-        std::println(stderr, "etherdbg: bind port {}: {}", port, strerror(errno));
-        ::close(sockfd);
-        return nullptr;
-    }
+     * comes back to our ephemeral port automatically. */
 
     return std::make_unique<UdpTransport>(sockfd, dest);
 }
