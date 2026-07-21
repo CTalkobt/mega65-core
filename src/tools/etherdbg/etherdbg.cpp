@@ -236,6 +236,16 @@ int main(int argc, char** argv)
         if (optind < argc) dbg_val = static_cast<uint8_t>(parse_hex(argv[optind++]));
     }
 
+    /* --- Nothing to do? Show help --- */
+    bool has_action = discover_only || reset64 || reset65 || do_jump || halt
+                    || do_run || do_ping || do_echo || do_read || do_write
+                    || do_peek || do_poke || do_fill || do_screen
+                    || !filename.empty() || !rom_file.empty();
+    if (!has_action) {
+        usage(argv[0]);
+        return 1;
+    }
+
     /* --- Discover only --- */
     if (discover_only) {
         auto addr = etherdbg::discover_mega65(
