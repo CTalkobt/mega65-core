@@ -179,6 +179,14 @@ public:
             std::println(stderr, "[udp] -> sent {} bytes to {}%{}",
                          sent, addr_str, dest_.sin6_scope_id);
         }
+        if (trace) {
+            for (size_t i = 0; i < data.size(); i++) {
+                if (i % 16 == 0) std::print(stderr, "[udp] -> {:04X}: ", i);
+                std::print(stderr, "{:02X} ", data[i]);
+                if (i % 16 == 15) std::println(stderr, "");
+            }
+            if (data.size() % 16 != 0) std::println(stderr, "");
+        }
         return data.size();  /* return original size, not padded */
     }
 
@@ -216,6 +224,14 @@ public:
             char addr_str[INET6_ADDRSTRLEN];
             inet_ntop(AF_INET6, &sender.sin6_addr, addr_str, sizeof(addr_str));
             std::println(stderr, "[udp] <- received {} bytes from {}", n, addr_str);
+        }
+        if (trace) {
+            for (size_t i = 0; i < buf.size(); i++) {
+                if (i % 16 == 0) std::print(stderr, "[udp] <- {:04X}: ", i);
+                std::print(stderr, "{:02X} ", buf[i]);
+                if (i % 16 == 15) std::println(stderr, "");
+            }
+            if (buf.size() % 16 != 0) std::println(stderr, "");
         }
         return buf;
     }
@@ -364,39 +380,30 @@ std::string discover_mega65(int timeout_ms, bool verbose_flag)
         std::println("Listening on {} interface(s) for MEGA65 beacon...",
                      interfaces.size());
 
-    /* Create a listening socket per interface */
-    std::vector<int> fds;
-    for (auto& iface : interfaces) {
-        int fd = socket(AF_INET6, SOCK_DGRAM, 0);
-        if (fd < 0) continue;
-
-        fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
-
-        int enable = 1;
-        setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &enable, sizeof(enable));
-        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable));
-        setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(enable));
-
-        /* Join multicast group ff02::1 on this interface */
-        ipv6_mreq mreq{};
-        mreq.ipv6mr_interface = iface.scope_id;
-        inet_pton(AF_INET6, "ff02::1", &mreq.ipv6mr_multiaddr);
-        setsockopt(fd, IPPROTO_IPV6, IPV6_JOIN_GROUP, &mreq, sizeof(mreq));
-
-        sockaddr_in6 bind_addr{};
-        bind_addr.sin6_family = AF_INET6;
-        bind_addr.sin6_port = htons(DEFAULT_PORT);
-        bind_addr.sin6_addr = in6addr_any;
-        if (bind(fd, reinterpret_cast<sockaddr*>(&bind_addr),
-                 sizeof(bind_addr)) < 0) {
-            ::close(fd);
-            continue;
-        }
-        fds.push_back(fd);
+    /* Create a single listening socket on port 4510.
+     * No IPV6_JOIN_GROUP — joining ff02::1 causes the OS to send MLD
+     * reports which ETHLOAD misinterprets, corrupting the MEGA65 screen.
+     * We receive beacons anyway since ff02::1 is the all-nodes group
+     * that all IPv6 hosts implicitly listen on. */
+    int discoverfd = socket(AF_INET6, SOCK_DGRAM, 0);
+    if (discoverfd < 0) {
+        std::println(stderr, "etherdbg: failed to create discovery socket");
+        return "";
     }
+    fcntl(discoverfd, F_SETFL, fcntl(discoverfd, F_GETFL) | O_NONBLOCK);
+    int enable = 1;
+    setsockopt(discoverfd, IPPROTO_IPV6, IPV6_V6ONLY, &enable, sizeof(enable));
+    setsockopt(discoverfd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable));
+    setsockopt(discoverfd, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(enable));
 
-    if (fds.empty()) {
-        std::println(stderr, "etherdbg: failed to create discovery sockets");
+    sockaddr_in6 bind_addr{};
+    bind_addr.sin6_family = AF_INET6;
+    bind_addr.sin6_port = htons(DEFAULT_PORT);
+    bind_addr.sin6_addr = in6addr_any;
+    if (bind(discoverfd, reinterpret_cast<sockaddr*>(&bind_addr),
+             sizeof(bind_addr)) < 0) {
+        std::println(stderr, "etherdbg: failed to bind discovery socket");
+        ::close(discoverfd);
         return "";
     }
 
@@ -406,30 +413,26 @@ std::string discover_mega65(int timeout_ms, bool verbose_flag)
     auto deadline = start + std::chrono::milliseconds(timeout_ms);
 
     while (std::chrono::steady_clock::now() < deadline) {
-        for (int fd : fds) {
-            char buf[256];
-            sockaddr_in6 src{};
-            socklen_t src_len = sizeof(src);
-            ssize_t n = recvfrom(fd, buf, sizeof(buf), 0,
-                                 reinterpret_cast<sockaddr*>(&src), &src_len);
-            if (n == 6 && std::memcmp(buf, "mega65", 6) == 0) {
-                char addr_str[INET6_ADDRSTRLEN];
-                inet_ntop(AF_INET6, &src.sin6_addr, addr_str, sizeof(addr_str));
+        char buf[256];
+        sockaddr_in6 src{};
+        socklen_t src_len = sizeof(src);
+        ssize_t n = recvfrom(discoverfd, buf, sizeof(buf), 0,
+                             reinterpret_cast<sockaddr*>(&src), &src_len);
+        if (n == 6 && std::memcmp(buf, "mega65", 6) == 0) {
+            char addr_str[INET6_ADDRSTRLEN];
+            inet_ntop(AF_INET6, &src.sin6_addr, addr_str, sizeof(addr_str));
 
-                /* Build "addr%iface" string */
-                char iface_name[IF_NAMESIZE] = {};
-                if_indextoname(src.sin6_scope_id, iface_name);
+            /* Build "addr%iface" string */
+            char iface_name[IF_NAMESIZE] = {};
+            if_indextoname(src.sin6_scope_id, iface_name);
 
-                result = std::string(addr_str) + "%" + iface_name;
-                goto done;
-            }
+            result = std::string(addr_str) + "%" + iface_name;
+            break;
         }
         usleep(1000);
     }
 
-done:
-    for (int fd : fds)
-        ::close(fd);
+    ::close(discoverfd);
 
     if (result.empty()) {
         std::println(stderr,

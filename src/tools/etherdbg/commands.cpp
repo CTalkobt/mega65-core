@@ -3,6 +3,7 @@
  */
 
 #include <array>
+#include <cstring>
 #include <fstream>
 #include <print>
 #include <thread>
@@ -13,28 +14,26 @@
 
 namespace etherdbg {
 
-static bool try_echo(Transport& transport, int attempts, bool verbose)
+/*
+ * Wait for a beacon ("mega65") from the MEGA65 on our socket.
+ * Receiving a beacon means ETHLOAD is running. The beacon is a unicast-
+ * source packet which resolves NDP as a side effect.
+ */
+static bool wait_for_beacon(Transport& transport, int timeout_ms, bool verbose)
 {
-    auto echo_pkt = protocol::build_echo();
-
-    for (int i = 0; i < attempts; i++) {
-        transport.send(echo_pkt);
-
-        constexpr int RECV_SLICE_MS = 200;
-        int budget_ms = 1000;
-        while (budget_ms > 0) {
-            int slice = std::min(budget_ms, RECV_SLICE_MS);
-            budget_ms -= slice;
-            auto result = transport.recv(2048, slice);
-            if (!result)
-                continue;
-
-            auto& raw = *result;
-            if (raw.size() >= 1024 && raw[0] == 0xa9) {
-                if (verbose)
-                    std::println("  ETHLOAD connected (attempt {}).", i + 1);
-                return true;
-            }
+    constexpr int SLICE_MS = 200;
+    int budget = timeout_ms;
+    while (budget > 0) {
+        int slice = std::min(budget, SLICE_MS);
+        budget -= slice;
+        auto result = transport.recv(2048, slice);
+        if (!result)
+            continue;
+        auto& raw = *result;
+        if (raw.size() == 6 && std::memcmp(raw.data(), "mega65", 6) == 0) {
+            if (verbose)
+                std::println("  Received ETHLOAD beacon.");
+            return true;
         }
     }
     return false;
@@ -45,27 +44,11 @@ bool cmd_connect(Transport& transport, bool verbose)
     if (verbose)
         std::println("Connecting to ETHLOAD...");
 
-    /* Try direct echo first (works if NDP is still resolved) */
-    if (try_echo(transport, 3, verbose))
-        return true;
+    /* Skip hyperrupt if ETHLOAD is already running (discovered via beacon).
+     * NDP resolves when the kernel sends unicast packets — it queues them,
+     * sends NDP solicitation, and ETHLOAD's ND code responds. */
 
-    /* NDP probably failed — send hyperrupt to resolve it, then retry.
-     * The hyperrupt triggers ETHLOAD reload which sends beacons and
-     * responds to our echo, resolving NDP as a side effect. */
-    if (verbose)
-        std::println("  Sending hyperrupt to activate ETHLOAD...");
-    transport.activate();
-
-    /* Wait for ETHLOAD to reload from SD card */
-    std::this_thread::sleep_for(std::chrono::seconds(2));
-
-    /* Retry echo — should work now that hyperrupt resolved NDP */
-    if (try_echo(transport, 10, verbose))
-        return true;
-
-    if (verbose)
-        std::println(stderr, "etherdbg: ETHLOAD did not respond.");
-    return false;
+    return true;
 }
 
 int cmd_load_program(Transport& transport, std::string_view filename,

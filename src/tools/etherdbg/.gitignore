@@ -2,3 +2,4 @@ etherdbg
 test_etherdbg
 test_send
 *.o
+test_discover

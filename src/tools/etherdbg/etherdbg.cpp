@@ -110,6 +110,7 @@ static void usage(std::string_view progname)
         "Options:\n"
         "  -p <port>   UDP port (default: 4510)\n"
         "  -v          Verbose output\n"
+        "  -vv         Packet hex dumps\n"
         "  -q          Quiet (errors only)",
         progname, progname, progname, progname, progname, progname, progname);
 }
@@ -125,6 +126,8 @@ int main(int argc, char** argv)
         auto arg = std::string_view(argv[argidx]);
         if (arg == "-p" && argidx + 1 < argc) {
             port = std::atoi(argv[++argidx]);
+        } else if (arg == "-vv") {
+            verbose = 3;
         } else if (arg == "-v") {
             verbose = 2;
         } else if (arg == "-q") {
@@ -167,6 +170,7 @@ int main(int argc, char** argv)
             std::exit(1);
         }
         t->verbose = (verbose >= 2);
+        t->trace = (verbose >= 3);
 
         if (!etherdbg::cmd_connect(*t, verbose >= 1)) {
             std::println(stderr, "etherdbg: failed to connect to MEGA65");
@@ -372,16 +376,11 @@ int main(int argc, char** argv)
         };
 
         std::println("Sending ping (INC $D020) — watch the MEGA65 border...");
-        for (int i = 0; i < 5; i++) {
-            auto result = transport->send(ping_pkt);
-            if (!result) {
-                std::println(stderr, "etherdbg: send failed: {}",
-                             etherdbg::to_string(result.error()));
-                return 1;
-            }
+        for (int i = 0; i < 20; i++) {
+            transport->send(ping_pkt);
             if (verbose >= 1)
                 std::println("  Sent ping #{}", i + 1);
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
         std::println("If the border changed colour, ETHLOAD executed our code.");
         return 0;

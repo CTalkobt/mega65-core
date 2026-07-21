@@ -56,6 +56,7 @@ public:
     virtual void activate() {}
 
     bool verbose = false;
+    bool trace = false;   /* -vv: hex dump all sent/received packets */
 };
 
 } // namespace etherdbg
