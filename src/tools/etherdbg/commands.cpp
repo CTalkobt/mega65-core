@@ -19,17 +19,39 @@ namespace etherdbg {
  * Receiving a beacon means ETHLOAD is running. The beacon is a unicast-
  * source packet which resolves NDP as a side effect.
  */
-bool cmd_connect(Transport& transport, bool verbose)
+static bool screen_saved = false;
+
+bool cmd_connect(Transport& transport, bool verbose, bool skip_hyperrupt)
 {
     if (verbose)
         std::println("Connecting to ETHLOAD...");
 
-    /* Send hyperrupt to resolve NDP. This causes ETHLOAD to reload
-     * which briefly disrupts the screen, but NDP cannot be resolved
-     * without it (MEGA65's IPv6 is minimal — no NDP responses). */
-    transport.activate();
+    if (!skip_hyperrupt) {
+        /* Send hyperrupt to resolve NDP. This causes ETHLOAD to reload
+         * which briefly disrupts the screen, but NDP cannot be resolved
+         * without it (MEGA65's IPv6 is minimal — no NDP responses). */
+        transport.activate();
+    } else {
+        if (verbose)
+            std::println("  Skipping hyperrupt (--no-hyperrupt).");
+    }
 
     return true;
+}
+
+void cmd_restore_screen(Transport& transport, bool verbose)
+{
+    if (!screen_saved)
+        return;
+
+    if (verbose)
+        std::println("Restoring screen...");
+
+    auto restore_pkt = protocol::build_screen_restore();
+    transport.send(restore_pkt);
+    /* Brief pause to let the restore complete */
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    screen_saved = false;
 }
 
 int cmd_load_program(Transport& transport, std::string_view filename,

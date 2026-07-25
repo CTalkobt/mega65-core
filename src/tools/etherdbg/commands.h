@@ -27,7 +27,14 @@ inline constexpr int DEFAULT_READ_RETRIES = 3;
  * This resolves NDP and confirms ETHLOAD is running.
  * Returns true on success.
  */
-bool cmd_connect(Transport& transport, bool verbose);
+bool cmd_connect(Transport& transport, bool verbose,
+                 bool skip_hyperrupt = false);
+
+/*
+ * Restore screen contents saved by cmd_connect.
+ * Call after your command completes to undo screen corruption.
+ */
+void cmd_restore_screen(Transport& transport, bool verbose);
 
 /*
  * Load a PRG file to the MEGA65.

@@ -659,6 +659,104 @@ std::vector<uint8_t> build_dma_load_ethlet(const DmaLoadOptions& opts,
     return buf;
 }
 
+/*
+ * Screen save/restore uses attic RAM at $8000000.
+ *
+ * Uses the same DMA trigger method as dma_load_template: write the
+ * DMA list address to $D700-$D705. This is proven to work — it's
+ * how every etherload data transfer operates.
+ *
+ * The DMA list is embedded in the ethlet and its address is computed
+ * relative to $FFDE840 (where the ethlet code lives in the RX buffer).
+ */
+
+static std::vector<uint8_t> build_screen_dma(bool save)
+{
+    std::vector<uint8_t> buf(1024, 0);
+    int pc = 0;
+
+    emit(buf, pc, 0xa9); emit(buf, pc, 0x00);  /* LDA #$00 (required) */
+
+    /* Enable MEGA65 I/O */
+    emit(buf, pc, 0xa9); emit(buf, pc, 0x47);
+    emit(buf, pc, 0x8d); emit16(buf, pc, 0xD02F);
+    emit(buf, pc, 0xa9); emit(buf, pc, 0x53);
+    emit(buf, pc, 0x8d); emit16(buf, pc, 0xD02F);
+
+    /* --- DMA job 1: screen RAM $0400 ↔ attic $8000000 --- */
+
+    /* Set source MB */
+    emit(buf, pc, 0xa9); emit(buf, pc, save ? 0x00 : 0x80);
+    emit(buf, pc, 0x8d); emit16(buf, pc, 0xD705);
+    /* Set dest MB */
+    emit(buf, pc, 0xa9); emit(buf, pc, save ? 0x80 : 0x00);
+    emit(buf, pc, 0x8d); emit16(buf, pc, 0xD706);
+    /* DMA list bank */
+    emit(buf, pc, 0xa9); emit(buf, pc, 0x0d);
+    emit(buf, pc, 0x8d); emit16(buf, pc, 0xD702);
+    /* DMA list addr high */
+    emit(buf, pc, 0xa9); emit(buf, pc, 0xe8);
+    emit(buf, pc, 0x8d); emit16(buf, pc, 0xD701);
+    /* DMA list MB */
+    emit(buf, pc, 0xa9); emit(buf, pc, 0xff);
+    emit(buf, pc, 0x8d); emit16(buf, pc, 0xD704);
+
+    /* Compute DMA list low byte: list is at current pc + 5 bytes
+     * (the LDA + STA $D700 that triggers it).
+     * In the RX buffer, our code starts at $6840, so the list
+     * at offset N lives at $FFDE840 + N. Low byte = ($40 + N) & $FF. */
+    int dma1_list = pc + 5;
+    uint8_t dma1_lo = (0x40 + dma1_list) & 0xff;
+    emit(buf, pc, 0xa9); emit(buf, pc, dma1_lo);
+    emit(buf, pc, 0x8d); emit16(buf, pc, 0xD700); /* trigger DMA */
+
+    /* DMA list 1: copy screen RAM */
+    emit(buf, pc, 0x00);                        /* copy, no chain */
+    emit16(buf, pc, 1000);                      /* byte count */
+    emit16(buf, pc, save ? 0x0400 : 0x0000);    /* src addr */
+    emit(buf, pc, save ? 0x00 : 0x00);          /* src bank */
+    emit16(buf, pc, save ? 0x0000 : 0x0400);    /* dst addr */
+    emit(buf, pc, save ? 0x00 : 0x00);          /* dst bank */
+    emit16(buf, pc, 0x0000);                    /* modulo */
+
+    /* --- DMA job 2: colour RAM $FF80800 ↔ attic $8000400 --- */
+
+    /* Set source MB */
+    emit(buf, pc, 0xa9); emit(buf, pc, save ? 0xff : 0x80);
+    emit(buf, pc, 0x8d); emit16(buf, pc, 0xD705);
+    /* Set dest MB */
+    emit(buf, pc, 0xa9); emit(buf, pc, save ? 0x80 : 0xff);
+    emit(buf, pc, 0x8d); emit16(buf, pc, 0xD706);
+
+    /* DMA list 2 address */
+    int dma2_list = pc + 5;
+    uint8_t dma2_lo = (0x40 + dma2_list) & 0xff;
+    emit(buf, pc, 0xa9); emit(buf, pc, dma2_lo);
+    emit(buf, pc, 0x8d); emit16(buf, pc, 0xD700); /* trigger DMA */
+
+    /* DMA list 2: copy colour RAM */
+    emit(buf, pc, 0x00);                        /* copy, no chain */
+    emit16(buf, pc, 1000);                      /* byte count */
+    emit16(buf, pc, save ? 0x0800 : 0x0400);    /* src addr */
+    emit(buf, pc, save ? 0x08 : 0x00);          /* src bank */
+    emit16(buf, pc, save ? 0x0400 : 0x0800);    /* dst addr */
+    emit(buf, pc, save ? 0x00 : 0x08);          /* dst bank */
+    emit16(buf, pc, 0x0000);                    /* modulo */
+
+    emit(buf, pc, 0x60);                        /* RTS */
+    return buf;
+}
+
+std::vector<uint8_t> build_screen_save()
+{
+    return build_screen_dma(true);
+}
+
+std::vector<uint8_t> build_screen_restore()
+{
+    return build_screen_dma(false);
+}
+
 std::vector<uint8_t> build_mem_read(uint32_t address, uint16_t count,
                                      uint8_t seq)
 {

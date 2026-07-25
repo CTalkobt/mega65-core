@@ -154,6 +154,7 @@ int main(int argc, char** argv)
     uint32_t dbg_count = 256;
     uint8_t dbg_val = 0;
     std::vector<uint8_t> dbg_bytes;
+    bool no_hyperrupt = false;
 
     static struct option long_opts[] = {
         {"help",        no_argument,       nullptr, 'h'},
@@ -173,6 +174,7 @@ int main(int argc, char** argv)
         {"cart-detect", no_argument,       nullptr, 'C'},
         {"pal",         no_argument,       nullptr, 'P'},
         {"ntsc",        no_argument,       nullptr, 'N'},
+        {"no-hyperrupt",no_argument,       nullptr, 'X'},
         {"ping",        no_argument,       nullptr, 1001},
         {"echo",        no_argument,       nullptr, 1002},
         {"read",        required_argument, nullptr, 1003},
@@ -207,6 +209,7 @@ int main(int argc, char** argv)
         case 'C': cart_detect = true; break;
         case 'P': video_mode = 1; break;
         case 'N': video_mode = -1; break;
+        case 'X': no_hyperrupt = true; break;
         case 1001: do_ping = true; break;
         case 1002: do_echo = true; break;
         case 1003: do_read = true; dbg_addr = parse_hex(optarg); break;
@@ -219,17 +222,8 @@ int main(int argc, char** argv)
         }
     }
 
-    /* Remaining positional arg = PRG filename */
-    if (optind < argc) {
-        filename = argv[optind++];
-        /* Check file exists early, before connecting */
-        if (!std::filesystem::exists(filename)) {
-            std::println(stderr, "etherdbg: file not found: '{}'", filename);
-            return 1;
-        }
-    }
-
-    /* Parse extra args for debug commands that need them */
+    /* Parse extra positional args for debug commands BEFORE filename,
+     * since they consume args that would otherwise be treated as filenames */
     if (do_read && optind < argc)
         dbg_count = parse_hex(argv[optind++]);
     if (do_write) {
@@ -241,6 +235,16 @@ int main(int argc, char** argv)
     if (do_fill) {
         if (optind < argc) dbg_count = parse_hex(argv[optind++]);
         if (optind < argc) dbg_val = static_cast<uint8_t>(parse_hex(argv[optind++]));
+    }
+
+    /* Remaining positional arg = PRG filename */
+    if (optind < argc) {
+        filename = argv[optind++];
+        /* Check file exists early, before connecting */
+        if (!std::filesystem::exists(filename)) {
+            std::println(stderr, "etherdbg: file not found: '{}'", filename);
+            return 1;
+        }
     }
 
     /* --- Nothing to do? Show help --- */
@@ -299,7 +303,7 @@ int main(int argc, char** argv)
     transport->verbose = (verbose >= 2);
     transport->trace = (verbose >= 3);
 
-    if (!etherdbg::cmd_connect(*transport, verbose >= 1)) {
+    if (!etherdbg::cmd_connect(*transport, verbose >= 1, no_hyperrupt)) {
         std::println(stderr, "etherdbg: failed to connect to MEGA65");
         return 1;
     }
@@ -316,6 +320,7 @@ int main(int argc, char** argv)
             transport->send(ping_pkt);
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
+        etherdbg::cmd_restore_screen(*transport, verbose >= 1);
         return 0;
     }
 
@@ -324,6 +329,7 @@ int main(int argc, char** argv)
         std::println("Sending echo...");
         transport->send(echo_pkt);
         auto resp = transport->recv(2048, 2000);
+        etherdbg::cmd_restore_screen(*transport, verbose >= 1);
         if (resp) {
             std::println("Echo response: {} bytes", resp->size());
             return 0;
@@ -357,11 +363,21 @@ int main(int argc, char** argv)
     }
 
     if (do_poke) {
+        etherdbg::protocol::DmaLoadOptions opts;
+        opts.dest_address = dbg_addr;
+        opts.byte_count = 1;
+        opts.rom_write_enable = true;
+        opts.seq_num = 0;
         std::vector<uint8_t> data = {dbg_val};
-        int ret = etherdbg::cmd_write_memory(*transport, dbg_addr, data, false);
-        if (ret == 0 && verbose >= 1)
+        auto pkt = etherdbg::protocol::build_dma_load_ethlet(opts, data);
+        auto result = transport->send(pkt);
+        if (!result) {
+            std::println(stderr, "etherdbg: send failed");
+            return 1;
+        }
+        if (verbose >= 1)
             std::println("${:07X} <- ${:02X}", dbg_addr, dbg_val);
-        return ret == 0 ? 0 : 1;
+        return 0;
     }
 
     if (do_fill) {

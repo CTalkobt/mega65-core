@@ -117,6 +117,19 @@ inline constexpr int RESPONSE_HEADER_SIZE = 8;
 inline constexpr int MAX_READ_SIZE = 1024;
 
 /*
+ * Build a screen-save ethlet. DMA-copies screen RAM ($0400, 1000 bytes)
+ * and colour RAM ($1F800, 1000 bytes) to upper memory ($10000).
+ * Used to preserve screen contents during ETHLOAD operations.
+ */
+std::vector<uint8_t> build_screen_save();
+
+/*
+ * Build a screen-restore ethlet. DMA-copies screen RAM and colour RAM
+ * back from upper memory ($10000) to their original locations.
+ */
+std::vector<uint8_t> build_screen_restore();
+
+/*
  * Build a memory-read packet. When executed on the MEGA65, this routine:
  *   1. Copies the requester's MAC into the TX buffer as destination
  *   2. Sets our MAC as source
