@@ -36,7 +36,7 @@ protocol in mega65-core commit `88f067d1`.
 
 ### Activation
 
-ETHLOAD.M65 is activated on the MEGA65 by pressing **Shift+£** (pound key).
+ETHLOAD.M65 is activated on the MEGA65 by pressing **Shift+(pound key)**.
 DIP switch 2 must be set to ON for Ethernet remote control to be enabled.
 When active, the MEGA65's power LED blinks green-yellow.
 
